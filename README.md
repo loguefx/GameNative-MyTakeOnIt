@@ -43,6 +43,8 @@ You can support GameNative on Ko-fi at https://ko-fi.com/gamenative
    Get your API key from: https://www.steamgriddb.com/profile/preferences
    If the API key is not configured, the app will log a message but continue to work normally without fetching images.
 
+**GitHub Actions (APK builds):** Workflows build a signed release APK on push to `main` and on version tags (`v*`). To use them, configure repository **Secrets** (keystores, POSTHOG/SUPABASE, etc.) and add `prod-debug.lineage` to the repo root (see upstream GameNative for signing setup). Bundletool is downloaded automatically. After a run, download the APK from the run’s **Artifacts** or the nightly.link URL in the summary.
+
 ## Community
 
 Join our [Discord server](https://discord.gg/2hKv4VfZfE) for support and updates.

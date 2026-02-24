@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main" ]
     paths-ignore:
       - '**.md'
       - '.gitignore'
@@ -76,8 +76,18 @@ jobs:
         fi
         yes | "$SDKMANAGER" --install "build-tools;34.0.0"
 
+    - name: Make Gradle wrapper executable
+      run: chmod +x gradlew
+
     - name: Build with Gradle
       run: ./gradlew :app:bundleRelease
+
+    - name: Download bundletool
+      run: |
+        mkdir -p tools
+        if [ ! -f tools/bundletool-all-1.17.2.jar ]; then
+          curl -L -o tools/bundletool-all-1.17.2.jar https://github.com/google/bundletool/releases/download/1.17.2/bundletool-all-1.17.2.jar
+        fi
 
     - name: Extract APK from Bundle
       run: |
@@ -135,6 +145,8 @@ jobs:
       env:
         DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       run: |
-        artifact_url="https://nightly.link/utkarshdalal/GameNative/actions/runs/${{ github.run_id }}/app-release-signed.zip"
+        artifact_url="https://nightly.link/${{ github.repository }}/actions/runs/${{ github.run_id }}/app-release-signed.zip"
         payload='{"content":"**New Android build**\nDownload: '"$artifact_url"'\n\nChanges:\n'"${{ steps.changelog.outputs.log }}"'"}'
-        curl -H 'Content-Type: application/json' -d "$payload" "$DISCORD_WEBHOOK_URL"
+        if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+          curl -H 'Content-Type: application/json' -d "$payload" "$DISCORD_WEBHOOK_URL"
+        fi
