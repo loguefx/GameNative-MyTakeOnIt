@@ -82,6 +82,14 @@ jobs:
     - name: Build with Gradle
       run: ./gradlew :app:bundleRelease
 
+    - name: Upload debug log
+      if: always()
+      continue-on-error: true
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-buildconfig-log
+        path: debug-6ad579.log
+
     - name: Download bundletool
       run: |
         mkdir -p tools

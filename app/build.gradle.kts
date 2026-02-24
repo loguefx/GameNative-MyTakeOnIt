@@ -60,6 +60,16 @@ android {
         versionName = "0.7.2"
 
         buildConfigField("boolean", "GOLD", "false")
+        // #region agent log
+        val debugLog = java.io.File(project.rootProject.layout.projectDirectory.asFile, "debug-6ad579.log")
+        debugLog.writeText("") // ensure file exists and is cleared at config start
+        debugLog.appendText("""{"sessionId":"6ad579","runId":"buildConfig","hypothesisId":"H0","location":"app/build.gradle.kts","message":"defaultConfig block entered","data":{"rootDir":"${project.rootProject.layout.projectDirectory.asFile.absolutePath}"},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+        fun logBuildConfig(key: String, passedValue: String, hypothesisId: String) {
+            val preview = passedValue.take(80).replace("\\", "\\\\").replace("\"", "\\\"")
+            val entry = """{"sessionId":"6ad579","runId":"buildConfig","hypothesisId":"$hypothesisId","location":"app/build.gradle.kts","message":"buildConfigField value","data":{"key":"$key","passedLength":${passedValue.length},"passedPreview":"$preview","rawFromFindProperty":${project.findProperty(key) != null},"rawFromEnv":${System.getenv(key) != null}},"timestamp":${System.currentTimeMillis()}}""" + "\n"
+            debugLog.appendText(entry)
+        }
+        // #endregion
         fun secret(name: String): String {
             val raw = project.findProperty(name) as String? ?: System.getenv(name) ?: ""
             return when (name) {
@@ -73,14 +83,6 @@ android {
             .replace("\"", "\\\"")
             .replace("\n", " ")
             .replace("\r", " ")
-        // #region agent log
-        val debugLog = java.io.File(project.rootProject.layout.projectDirectory.asFile, "debug-6ad579.log")
-        fun logBuildConfig(key: String, passedValue: String, hypothesisId: String) {
-            val preview = passedValue.take(80).replace("\\", "\\\\").replace("\"", "\\\"")
-            val entry = """{"sessionId":"6ad579","runId":"buildConfig","hypothesisId":"$hypothesisId","location":"app/build.gradle.kts","message":"buildConfigField value","data":{"key":"$key","passedLength":${passedValue.length},"passedPreview":"$preview","rawFromFindProperty":${project.findProperty(key) != null},"rawFromEnv":${System.getenv(key) != null}},"timestamp":${System.currentTimeMillis()}}""" + "\n"
-            debugLog.appendText(entry)
-        }
-        // #endregion
         run {
             val v = "\"${escapeForBuildConfig(secret("POSTHOG_API_KEY"))}\""
             logBuildConfig("POSTHOG_API_KEY", v, "H1")
