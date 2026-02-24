@@ -60,14 +60,24 @@ android {
         versionName = "0.7.2"
 
         buildConfigField("boolean", "GOLD", "false")
-        fun secret(name: String) =
-            project.findProperty(name) as String? ?: System.getenv(name) ?: ""
-
-        buildConfigField("String", "POSTHOG_API_KEY", "\"${secret("POSTHOG_API_KEY")}\"")
-        buildConfigField("String", "POSTHOG_HOST",  "\"${secret("POSTHOG_HOST")}\"")
-        buildConfigField("String", "SUPABASE_URL",  "\"${secret("SUPABASE_URL")}\"")
-        buildConfigField("String", "SUPABASE_KEY",  "\"${secret("SUPABASE_KEY")}\"")
-        buildConfigField("String", "STEAMGRIDDB_API_KEY", "\"${secret("STEAMGRIDDB_API_KEY")}\"")
+        fun secret(name: String): String {
+            val raw = project.findProperty(name) as String? ?: System.getenv(name) ?: ""
+            return when (name) {
+                "POSTHOG_HOST" -> if (raw.isBlank()) "https://us.i.posthog.com" else raw
+                "SUPABASE_URL", "SUPABASE_KEY" -> raw
+                else -> raw
+            }
+        }
+        fun escapeForBuildConfig(s: String): String = s
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", " ")
+            .replace("\r", " ")
+        buildConfigField("String", "POSTHOG_API_KEY", "\"${escapeForBuildConfig(secret("POSTHOG_API_KEY"))}\"")
+        buildConfigField("String", "POSTHOG_HOST",  "\"${escapeForBuildConfig(secret("POSTHOG_HOST"))}\"")
+        buildConfigField("String", "SUPABASE_URL",  "\"${escapeForBuildConfig(secret("SUPABASE_URL"))}\"")
+        buildConfigField("String", "SUPABASE_KEY",  "\"${escapeForBuildConfig(secret("SUPABASE_KEY"))}\"")
+        buildConfigField("String", "STEAMGRIDDB_API_KEY", "\"${escapeForBuildConfig(secret("STEAMGRIDDB_API_KEY"))}\"")
         val iconValue = "@mipmap/ic_launcher"
         val iconRoundValue = "@mipmap/ic_launcher_round"
         manifestPlaceholders.putAll(
