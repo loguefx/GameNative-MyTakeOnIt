@@ -73,11 +73,39 @@ android {
             .replace("\"", "\\\"")
             .replace("\n", " ")
             .replace("\r", " ")
-        buildConfigField("String", "POSTHOG_API_KEY", "\"${escapeForBuildConfig(secret("POSTHOG_API_KEY"))}\"")
-        buildConfigField("String", "POSTHOG_HOST",  "\"${escapeForBuildConfig(secret("POSTHOG_HOST"))}\"")
-        buildConfigField("String", "SUPABASE_URL",  "\"${escapeForBuildConfig(secret("SUPABASE_URL"))}\"")
-        buildConfigField("String", "SUPABASE_KEY",  "\"${escapeForBuildConfig(secret("SUPABASE_KEY"))}\"")
-        buildConfigField("String", "STEAMGRIDDB_API_KEY", "\"${escapeForBuildConfig(secret("STEAMGRIDDB_API_KEY"))}\"")
+        // #region agent log
+        val debugLog = java.io.File(project.rootProject.layout.projectDirectory.asFile, "debug-6ad579.log")
+        fun logBuildConfig(key: String, passedValue: String, hypothesisId: String) {
+            val preview = passedValue.take(80).replace("\\", "\\\\").replace("\"", "\\\"")
+            val entry = """{"sessionId":"6ad579","runId":"buildConfig","hypothesisId":"$hypothesisId","location":"app/build.gradle.kts","message":"buildConfigField value","data":{"key":"$key","passedLength":${passedValue.length},"passedPreview":"$preview","rawFromFindProperty":${project.findProperty(key) != null},"rawFromEnv":${System.getenv(key) != null}},"timestamp":${System.currentTimeMillis()}}""" + "\n"
+            debugLog.appendText(entry)
+        }
+        // #endregion
+        run {
+            val v = "\"${escapeForBuildConfig(secret("POSTHOG_API_KEY"))}\""
+            logBuildConfig("POSTHOG_API_KEY", v, "H1")
+            buildConfigField("String", "POSTHOG_API_KEY", v)
+        }
+        run {
+            val v = "\"${escapeForBuildConfig(secret("POSTHOG_HOST"))}\""
+            logBuildConfig("POSTHOG_HOST", v, "H1")
+            buildConfigField("String", "POSTHOG_HOST", v)
+        }
+        run {
+            val v = "\"${escapeForBuildConfig(secret("SUPABASE_URL"))}\""
+            logBuildConfig("SUPABASE_URL", v, "H2")
+            buildConfigField("String", "SUPABASE_URL", v)
+        }
+        run {
+            val v = "\"${escapeForBuildConfig(secret("SUPABASE_KEY"))}\""
+            logBuildConfig("SUPABASE_KEY", v, "H2")
+            buildConfigField("String", "SUPABASE_KEY", v)
+        }
+        run {
+            val v = "\"${escapeForBuildConfig(secret("STEAMGRIDDB_API_KEY"))}\""
+            logBuildConfig("STEAMGRIDDB_API_KEY", v, "H1")
+            buildConfigField("String", "STEAMGRIDDB_API_KEY", v)
+        }
         val iconValue = "@mipmap/ic_launcher"
         val iconRoundValue = "@mipmap/ic_launcher_round"
         manifestPlaceholders.putAll(
