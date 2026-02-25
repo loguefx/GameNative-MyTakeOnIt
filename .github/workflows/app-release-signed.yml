@@ -79,6 +79,16 @@ jobs:
     - name: Make Gradle wrapper executable
       run: chmod +x gradlew
 
+    - name: Verify Room schema directory
+      run: |
+        echo "Contents of app/schemas:"
+        ls -la app/schemas/ || true
+        echo "Contents of app/schemas/app.gamenative.db.PluviaDatabase:"
+        ls -la app/schemas/app.gamenative.db.PluviaDatabase/ || true
+        if [ ! -d "app/schemas" ] || [ -z "$(find app/schemas -name '*.json' 2>/dev/null)" ]; then
+          echo "::warning::Room schema directory missing or has no JSON files; copyRoomSchemas may report NO-SOURCE"
+        fi
+
     - name: Write BuildConfig debug log
       run: ./gradlew :app:writeBuildConfigDebugLog -PdebugLogDir="${{ github.workspace }}"
 

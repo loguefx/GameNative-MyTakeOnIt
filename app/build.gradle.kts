@@ -345,6 +345,14 @@ dependencies {
     implementation("com.auth0.android:jwtdecode:2.0.2")
 }
 
+// Avoid copyRoomSchemas NO-SOURCE failure when schema dir is missing/empty in CI
+tasks.matching { it.name.contains("copyRoomSchemas", ignoreCase = true) }.configureEach {
+    onlyIf {
+        val dir = project.file("schemas")
+        dir.exists() && dir.walkTopDown().any { it.isFile && it.extension == "json" }
+    }
+}
+
 // #region agent log – task so CI can run it and get debug-6ad579.log in workspace
 tasks.register("writeBuildConfigDebugLog") {
     doLast {
