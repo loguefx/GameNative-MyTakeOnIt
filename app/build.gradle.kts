@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.io.File
 import java.io.FileInputStream
 
 plugins {
@@ -61,7 +62,7 @@ android {
 
         buildConfigField("boolean", "GOLD", "false")
         // #region agent log
-        val debugLog = java.io.File(project.rootProject.layout.projectDirectory.asFile, "debug-6ad579.log")
+        val debugLog = File(project.rootProject.layout.projectDirectory.asFile, "debug-6ad579.log")
         debugLog.writeText("") // ensure file exists and is cleared at config start
         debugLog.appendText("""{"sessionId":"6ad579","runId":"buildConfig","hypothesisId":"H0","location":"app/build.gradle.kts","message":"defaultConfig block entered","data":{"rootDir":"${project.rootProject.layout.projectDirectory.asFile.absolutePath}"},"timestamp":${System.currentTimeMillis()}}""" + "\n")
         fun logBuildConfig(key: String, passedValue: String, hypothesisId: String) {
@@ -342,9 +343,9 @@ dependencies {
 // #region agent log – task so CI can run it and get debug-6ad579.log in workspace
 tasks.register("writeBuildConfigDebugLog") {
     doLast {
-        val outputDir = (project.findProperty("debugLogDir") as String?)?.let { java.io.File(it) }
+        val outputDir = (project.findProperty("debugLogDir") as String?)?.let { File(it) }
             ?: project.rootProject.layout.projectDirectory.asFile
-        val logFile = java.io.File(outputDir, "debug-6ad579.log")
+        val logFile = File(outputDir, "debug-6ad579.log")
         fun secret(name: String): String {
             val raw = project.findProperty(name) as String? ?: System.getenv(name) ?: ""
             return when (name) {
