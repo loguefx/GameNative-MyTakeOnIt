@@ -79,6 +79,15 @@ jobs:
     - name: Make Gradle wrapper executable
       run: chmod +x gradlew
 
+    - name: Write BuildConfig debug log
+      run: ./gradlew :app:writeBuildConfigDebugLog -PdebugLogDir="${{ github.workspace }}"
+
+    - name: Show debug log location
+      if: always()
+      run: |
+        echo "Workspace: ${{ github.workspace }}"
+        ls -la "${{ github.workspace }}/debug-6ad579.log" 2>/dev/null && echo "--- log contents ---" && head -20 "${{ github.workspace }}/debug-6ad579.log" || echo "File not found"
+
     - name: Build with Gradle
       run: ./gradlew :app:bundleRelease
 

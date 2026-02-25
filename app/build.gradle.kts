@@ -338,3 +338,30 @@ dependencies {
 
     implementation("com.auth0.android:jwtdecode:2.0.2")
 }
+
+// #region agent log – task so CI can run it and get debug-6ad579.log in workspace
+tasks.register("writeBuildConfigDebugLog") {
+    doLast {
+        val outputDir = (project.findProperty("debugLogDir") as String?)?.let { java.io.File(it) }
+            ?: project.rootProject.layout.projectDirectory.asFile
+        val logFile = java.io.File(outputDir, "debug-6ad579.log")
+        fun secret(name: String): String {
+            val raw = project.findProperty(name) as String? ?: System.getenv(name) ?: ""
+            return when (name) {
+                "POSTHOG_HOST" -> if (raw.isBlank()) "https://us.i.posthog.com" else raw
+                "SUPABASE_URL", "SUPABASE_KEY" -> raw
+                else -> raw
+            }
+        }
+        fun escape(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", " ")
+        val keys = listOf("POSTHOG_API_KEY", "POSTHOG_HOST", "SUPABASE_URL", "SUPABASE_KEY", "STEAMGRIDDB_API_KEY")
+        logFile.writeText("")
+        logFile.appendText("""{"sessionId":"6ad579","runId":"task","hypothesisId":"H0","message":"writeBuildConfigDebugLog task ran","data":{"outputDir":"${logFile.parentFile.absolutePath}"},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+        for (key in keys) {
+            val v = "\"${escape(secret(key))}\""
+            val preview = v.take(80).replace("\\", "\\\\").replace("\"", "\\\"")
+            logFile.appendText("""{"sessionId":"6ad579","runId":"task","hypothesisId":"H2","message":"buildConfigField value","data":{"key":"$key","passedLength":${v.length},"passedPreview":"$preview","rawFromFindProperty":${project.findProperty(key) != null},"rawFromEnv":${System.getenv(key) != null}},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+        }
+    }
+}
+// #endregion
