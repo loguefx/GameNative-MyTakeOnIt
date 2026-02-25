@@ -84,28 +84,33 @@ android {
             .replace("\"", "\\\"")
             .replace("\n", " ")
             .replace("\r", " ")
+        // Ensure value is never empty so generated BuildConfig never has "= ;"
+        fun stringLiteral(content: String): String {
+            val escaped = escapeForBuildConfig(content)
+            return if (escaped.isEmpty()) "\"\"" else "\"$escaped\""
+        }
         run {
-            val v = "\"${escapeForBuildConfig(secret("POSTHOG_API_KEY"))}\""
+            val v = stringLiteral(secret("POSTHOG_API_KEY"))
             logBuildConfig("POSTHOG_API_KEY", v, "H1")
             buildConfigField("String", "POSTHOG_API_KEY", v)
         }
         run {
-            val v = "\"${escapeForBuildConfig(secret("POSTHOG_HOST"))}\""
+            val v = stringLiteral(secret("POSTHOG_HOST"))
             logBuildConfig("POSTHOG_HOST", v, "H1")
             buildConfigField("String", "POSTHOG_HOST", v)
         }
         run {
-            val v = "\"${escapeForBuildConfig(secret("SUPABASE_URL"))}\""
+            val v = stringLiteral(secret("SUPABASE_URL"))
             logBuildConfig("SUPABASE_URL", v, "H2")
             buildConfigField("String", "SUPABASE_URL", v)
         }
         run {
-            val v = "\"${escapeForBuildConfig(secret("SUPABASE_KEY"))}\""
+            val v = stringLiteral(secret("SUPABASE_KEY"))
             logBuildConfig("SUPABASE_KEY", v, "H2")
             buildConfigField("String", "SUPABASE_KEY", v)
         }
         run {
-            val v = "\"${escapeForBuildConfig(secret("STEAMGRIDDB_API_KEY"))}\""
+            val v = stringLiteral(secret("STEAMGRIDDB_API_KEY"))
             logBuildConfig("STEAMGRIDDB_API_KEY", v, "H1")
             buildConfigField("String", "STEAMGRIDDB_API_KEY", v)
         }
