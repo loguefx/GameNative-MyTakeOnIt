@@ -37,7 +37,13 @@ jobs:
         KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
       run: |
         mkdir -p app/keystores
-        echo "$KEYSTORE" | tr -d '\n\r' | base64 --decode > app/keystores/keystore
+        b64="$(echo "$KEYSTORE" | tr -d ' \n\r\t')"
+        if [ -n "$b64" ] && echo "$b64" | base64 --decode > app/keystores/keystore 2>/dev/null; then
+          echo "Keystore decoded successfully."
+        else
+          echo "::warning::KEYSTORE secret is missing or not valid base64. Using empty file; signing will be skipped. To fix: encode your .keystore file as single-line base64 (e.g. PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes('keystore'))) and set the KEYSTORE repository secret."
+          true > app/keystores/keystore
+        fi
         echo "storeFile=keystores/keystore" >> app/keystores/keystore.properties
         echo "keyAlias=$KEYSTORE_KEY_ALIAS" >> app/keystores/keystore.properties
         echo "storePassword=$KEYSTORE_STORE_PASSWORD" >> app/keystores/keystore.properties
@@ -51,7 +57,13 @@ jobs:
         PROD_KEYSTORE_STORE_PASSWORD: ${{ secrets.PROD_KEYSTORE_STORE_PASSWORD }}
       run: |
         mkdir -p app/keystores
-        echo "$PROD_KEYSTORE" | tr -d '\n\r' | base64 --decode > app/keystores/prod.keystore
+        b64="$(echo "$PROD_KEYSTORE" | tr -d ' \n\r\t')"
+        if [ -n "$b64" ] && echo "$b64" | base64 --decode > app/keystores/prod.keystore 2>/dev/null; then
+          echo "Production keystore decoded successfully."
+        else
+          echo "::warning::PROD_KEYSTORE secret is missing or not valid base64. Using empty file; signing will be skipped."
+          true > app/keystores/prod.keystore
+        fi
         cat <<EOF > app/keystores/prod-keystore.properties
         keyAlias=$PROD_KEYSTORE_KEY_ALIAS
         keyPassword=$PROD_KEYSTORE_KEY_PASSWORD
