@@ -37,7 +37,7 @@ jobs:
         KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
       run: |
         mkdir -p app/keystores
-        echo "$KEYSTORE" | base64 --decode > app/keystores/keystore
+        echo "$KEYSTORE" | tr -d '\n\r' | base64 --decode > app/keystores/keystore
         echo "storeFile=keystores/keystore" >> app/keystores/keystore.properties
         echo "keyAlias=$KEYSTORE_KEY_ALIAS" >> app/keystores/keystore.properties
         echo "storePassword=$KEYSTORE_STORE_PASSWORD" >> app/keystores/keystore.properties
@@ -51,7 +51,7 @@ jobs:
         PROD_KEYSTORE_STORE_PASSWORD: ${{ secrets.PROD_KEYSTORE_STORE_PASSWORD }}
       run: |
         mkdir -p app/keystores
-        echo "$PROD_KEYSTORE" | base64 --decode > app/keystores/prod.keystore
+        echo "$PROD_KEYSTORE" | tr -d '\n\r' | base64 --decode > app/keystores/prod.keystore
         cat <<EOF > app/keystores/prod-keystore.properties
         keyAlias=$PROD_KEYSTORE_KEY_ALIAS
         keyPassword=$PROD_KEYSTORE_KEY_PASSWORD
@@ -145,19 +145,23 @@ jobs:
         if [ ! -d "$BUILD_TOOLS_DIR" ]; then
           BUILD_TOOLS_DIR="${ANDROID_SDK_ROOT}/build-tools/34.0.0"
         fi
-        "${BUILD_TOOLS_DIR}/apksigner" sign \
-          --lineage app/keystores/prod-debug.lineage \
-          --ks app/keystores/keystore \
-          --ks-key-alias "$DEBUG_ALIAS" \
-          --ks-pass pass:$DEBUG_STORE_PASS \
-          --key-pass pass:$DEBUG_KEY_PASS \
-          --next-signer --ks app/keystores/prod.keystore \
-          --ks-key-alias "$PROD_ALIAS" \
-          --ks-pass pass:$PROD_STORE_PASS \
-          --key-pass pass:$PROD_KEY_PASS \
-          --out universal-signed.apk \
-          universal.apk
-        mv universal-signed.apk universal.apk
+        if [ -s app/keystores/keystore ] && [ -s app/keystores/prod.keystore ]; then
+          "${BUILD_TOOLS_DIR}/apksigner" sign \
+            --lineage app/keystores/prod-debug.lineage \
+            --ks app/keystores/keystore \
+            --ks-key-alias "$DEBUG_ALIAS" \
+            --ks-pass pass:$DEBUG_STORE_PASS \
+            --key-pass pass:$DEBUG_KEY_PASS \
+            --next-signer --ks app/keystores/prod.keystore \
+            --ks-key-alias "$PROD_ALIAS" \
+            --ks-pass pass:$PROD_STORE_PASS \
+            --key-pass pass:$PROD_KEY_PASS \
+            --out universal-signed.apk \
+            universal.apk
+          mv universal-signed.apk universal.apk
+        else
+          echo "::notice::Keystore(s) missing or empty (add KEYSTORE and PROD_KEYSTORE secrets to enable signing). Uploading unsigned APK."
+        fi
 
     - name: Upload Artifact
       id: upload_app
