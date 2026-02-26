@@ -54,6 +54,8 @@ app/.cxx/
 
 #Private keystore data
 app/keystores/*
+keystore-base64.txt
+prod-keystore-base64.txt
 !app/keystores/.gitkeep
 
 # virglrenderer
