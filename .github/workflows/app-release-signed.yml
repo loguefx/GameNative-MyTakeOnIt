@@ -171,8 +171,18 @@ jobs:
             --out universal-signed.apk \
             universal.apk
           mv universal-signed.apk universal.apk
+        elif [ -s app/keystores/keystore ]; then
+          "${BUILD_TOOLS_DIR}/apksigner" sign \
+            --ks app/keystores/keystore \
+            --ks-key-alias "$DEBUG_ALIAS" \
+            --ks-pass pass:$DEBUG_STORE_PASS \
+            --key-pass pass:$DEBUG_KEY_PASS \
+            --out universal-signed.apk \
+            universal.apk
+          mv universal-signed.apk universal.apk
+          echo "::notice::Signed with single keystore (KEYSTORE). Add PROD_KEYSTORE for dual signing."
         else
-          echo "::notice::Keystore(s) missing or empty (add KEYSTORE and PROD_KEYSTORE secrets to enable signing). Uploading unsigned APK."
+          echo "::notice::Keystore(s) missing or empty (add KEYSTORE secret to enable signing). Uploading unsigned APK."
         fi
 
     - name: Upload Artifact
@@ -185,9 +195,9 @@ jobs:
     - name: Build changelog text
       id: changelog
       run: |
-        text=$(jq -r '.commits[] | "• " + (.message | split("\n")[0]) + " (" + .id[0:7] + ")"' "$GITHUB_EVENT_PATH")
+        text=$(jq -r '(.commits // [])[] | "• " + (.message | split("\n")[0]) + " (" + .id[0:7] + ")"' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
         echo 'log<<EOF' >>"$GITHUB_OUTPUT"
-        echo "$text" >>"$GITHUB_OUTPUT"
+        echo "${text:-No commits (manual run)}" >>"$GITHUB_OUTPUT"
         echo 'EOF' >>"$GITHUB_OUTPUT"
 
     - name: Post to Discord
