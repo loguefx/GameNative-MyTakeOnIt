@@ -91,6 +91,12 @@ jobs:
     - name: Make Gradle wrapper executable
       run: chmod +x gradlew
 
+    # #region agent log
+    - name: Initialize debug log
+      run: |
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H0","location":"workflow","message":"workflow_start","data":{},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+    # #endregion
+
     - name: Verify Room schema directory
       run: |
         echo "Contents of app/schemas:"
@@ -127,6 +133,14 @@ jobs:
         name: debug-buildconfig-log
         path: debug-6ad579.log
 
+    - name: Upload debug session log
+      if: always()
+      continue-on-error: true
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-session-log
+        path: debug-e39ecc.log
+
     - name: Download bundletool
       run: |
         mkdir -p tools
@@ -136,13 +150,25 @@ jobs:
 
     - name: Extract APK from Bundle
       run: |
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H2","location":"workflow","message":"step_start","data":{"step":"extract_apk"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
         java -jar tools/bundletool-all-1.17.2.jar build-apks --bundle=app/build/outputs/bundle/release/app-release.aab --output=app-release.apks --mode=universal
         unzip -o app-release.apks universal.apk
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H2","location":"workflow","message":"step_ok","data":{"step":"extract_apk"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
 
     - name: Copy lineage file
       run: |
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H1","location":"workflow","message":"step_start","data":{"step":"copy_lineage"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
         mkdir -p app/keystores
         cp prod-debug.lineage app/keystores/prod-debug.lineage
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H1","location":"workflow","message":"step_ok","data":{"step":"copy_lineage"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
 
     - name: Dual sign universal APK
       env:
@@ -153,37 +179,48 @@ jobs:
         PROD_KEY_PASS: ${{ secrets.PROD_KEYSTORE_KEY_PASSWORD }}
         PROD_STORE_PASS: ${{ secrets.PROD_KEYSTORE_STORE_PASSWORD }}
       run: |
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H3","location":"workflow","message":"step_start","data":{"step":"dual_sign"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
         BUILD_TOOLS_DIR="${ANDROID_HOME}/build-tools/34.0.0"
         if [ ! -d "$BUILD_TOOLS_DIR" ]; then
           BUILD_TOOLS_DIR="${ANDROID_SDK_ROOT}/build-tools/34.0.0"
         fi
         if [ -s app/keystores/keystore ] && [ -s app/keystores/prod.keystore ]; then
           "${BUILD_TOOLS_DIR}/apksigner" sign \
+            --in universal.apk \
+            --out universal-signed.apk \
             --lineage app/keystores/prod-debug.lineage \
             --ks app/keystores/keystore \
             --ks-key-alias "$DEBUG_ALIAS" \
-            --ks-pass pass:$DEBUG_STORE_PASS \
-            --key-pass pass:$DEBUG_KEY_PASS \
+            --ks-pass "pass:$DEBUG_STORE_PASS" \
+            --key-pass "pass:$DEBUG_KEY_PASS" \
             --next-signer --ks app/keystores/prod.keystore \
             --ks-key-alias "$PROD_ALIAS" \
-            --ks-pass pass:$PROD_STORE_PASS \
-            --key-pass pass:$PROD_KEY_PASS \
-            --out universal-signed.apk \
-            universal.apk
+            --ks-pass "pass:$PROD_STORE_PASS" \
+            --key-pass "pass:$PROD_KEY_PASS"
           mv universal-signed.apk universal.apk
         elif [ -s app/keystores/keystore ]; then
           "${BUILD_TOOLS_DIR}/apksigner" sign \
+            --in universal.apk \
+            --out universal-signed.apk \
             --ks app/keystores/keystore \
             --ks-key-alias "$DEBUG_ALIAS" \
-            --ks-pass pass:$DEBUG_STORE_PASS \
-            --key-pass pass:$DEBUG_KEY_PASS \
-            --out universal-signed.apk \
-            universal.apk
+            --ks-pass "pass:$DEBUG_STORE_PASS" \
+            --key-pass "pass:$DEBUG_KEY_PASS"
           mv universal-signed.apk universal.apk
           echo "::notice::Signed with single keystore (KEYSTORE). Add PROD_KEYSTORE for dual signing."
         else
           echo "::notice::Keystore(s) missing or empty (add KEYSTORE secret to enable signing). Uploading unsigned APK."
         fi
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H3","location":"workflow","message":"step_ok","data":{"step":"dual_sign"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
+
+    # #region agent log
+    - name: Log before upload
+      run: echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H4","location":"workflow","message":"step_start","data":{"step":"upload_artifact"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+    # #endregion
 
     - name: Upload Artifact
       id: upload_app
@@ -192,13 +229,24 @@ jobs:
         name: app-release-signed
         path: ${{ github.workspace }}/universal.apk
 
+    # #region agent log
+    - name: Log after upload
+      run: echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H4","location":"workflow","message":"step_ok","data":{"step":"upload_artifact"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+    # #endregion
+
     - name: Build changelog text
       id: changelog
       run: |
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H5","location":"workflow","message":"step_start","data":{"step":"changelog"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
         text=$(jq -r '(.commits // [])[] | "• " + (.message | split("\n")[0]) + " (" + .id[0:7] + ")"' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
         echo 'log<<EOF' >>"$GITHUB_OUTPUT"
         echo "${text:-No commits (manual run)}" >>"$GITHUB_OUTPUT"
         echo 'EOF' >>"$GITHUB_OUTPUT"
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"H5","location":"workflow","message":"step_ok","data":{"step":"changelog"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
 
     - name: Post to Discord
       env:
