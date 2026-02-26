@@ -85,15 +85,17 @@ class PluviaApp : SplitCompatApplication() {
             Timber.e(e, "[PluviaApp]: Failed to clear temporary config overrides")
         }
 
-        // Initialize PostHog Analytics
-        val postHogConfig = PostHogAndroidConfig(
-            apiKey = BuildConfig.POSTHOG_API_KEY,
-            host = BuildConfig.POSTHOG_HOST,
-        ).apply {
-            /* turn every event into an identified one */
-            personProfiles = PersonProfiles.ALWAYS
+        // Initialize PostHog Analytics (skip when key is unset/blank)
+        val postHogKey = BuildConfig.POSTHOG_API_KEY
+        if (postHogKey.isNotBlank() && postHogKey != "unset") {
+            val postHogConfig = PostHogAndroidConfig(
+                apiKey = postHogKey,
+                host = BuildConfig.POSTHOG_HOST,
+            ).apply {
+                personProfiles = PersonProfiles.ALWAYS
+            }
+            PostHogAndroid.setup(this, postHogConfig)
         }
-        PostHogAndroid.setup(this, postHogConfig)
 
         // Initialize Supabase client
         try {
@@ -128,7 +130,7 @@ class PluviaApp : SplitCompatApplication() {
         @OptIn(SupabaseInternal::class)
         fun initSupabase() {
             Timber.d("Initializing Supabase client with URL: ${BuildConfig.SUPABASE_URL}")
-            if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_KEY.isBlank()) {
+            if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_URL == "unset" || BuildConfig.SUPABASE_KEY.isBlank() || BuildConfig.SUPABASE_KEY == "unset") {
                 Timber.e("Invalid Supabase URL or key - URL: ${BuildConfig.SUPABASE_URL}, key empty: ${BuildConfig.SUPABASE_KEY.isBlank()}")
                 throw IllegalStateException("Supabase URL or key is empty")
             }

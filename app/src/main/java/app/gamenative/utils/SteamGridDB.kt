@@ -41,7 +41,7 @@ object SteamGridDB {
      */
     private fun getApiKey(): String? {
         val apiKey = app.gamenative.BuildConfig.STEAMGRIDDB_API_KEY
-        return if (apiKey.isNotEmpty()) {
+        return if (apiKey.isNotEmpty() && apiKey != "unset") {
             apiKey
         } else {
             null
