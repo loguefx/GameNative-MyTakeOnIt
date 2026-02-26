@@ -99,6 +99,12 @@ jobs:
         ls -la "${{ github.workspace }}/debug-6ad579.log" 2>/dev/null && echo "--- log contents ---" && head -20 "${{ github.workspace }}/debug-6ad579.log" || echo "File not found"
 
     - name: Build with Gradle
+      env:
+        POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+        POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        STEAMGRIDDB_API_KEY: ${{ secrets.STEAMGRIDDB_API_KEY }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       run: ./gradlew :app:bundleRelease
 
     - name: Upload debug log

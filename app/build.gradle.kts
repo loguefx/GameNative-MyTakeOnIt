@@ -84,11 +84,11 @@ android {
             .replace("\"", "\\\"")
             .replace("\n", " ")
             .replace("\r", " ")
-        // AGP drops empty/single-space values between config and generation; use placeholder so generator always writes.
-        val buildConfigUnset = "\"unset\""
+        // AGP requires a valid Java string literal; never pass empty so generated BuildConfig is always valid.
         fun stringLiteral(content: String): String {
-            val escaped = escapeForBuildConfig(content)
-            return if (escaped.isEmpty()) buildConfigUnset else "\"$escaped\""
+            val safe = content.trim()
+            val escaped = escapeForBuildConfig(if (safe.isEmpty()) "unset" else safe)
+            return "\"$escaped\""
         }
         run {
             val v = stringLiteral(secret("POSTHOG_API_KEY"))
