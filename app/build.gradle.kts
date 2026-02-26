@@ -14,6 +14,15 @@ plugins {
     alias(libs.plugins.room)
 }
 
+// Prevent Secrets plugin from injecting these into BuildConfig (we set them in defaultConfig with safe "unset" when empty).
+secrets {
+    ignoreList.add("POSTHOG_API_KEY")
+    ignoreList.add("POSTHOG_HOST")
+    ignoreList.add("STEAMGRIDDB_API_KEY")
+    ignoreList.add("SUPABASE_URL")
+    ignoreList.add("SUPABASE_KEY")
+}
+
 val keystorePropertiesFile = rootProject.file("app/keystores/keystore.properties")
 val keystoreProperties: Properties? = if (keystorePropertiesFile.exists()) {
     Properties().apply {
