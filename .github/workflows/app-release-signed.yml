@@ -159,7 +159,15 @@ jobs:
       run: |
         mkdir -p tools
         if [ ! -f tools/bundletool-all-1.17.2.jar ]; then
-          curl -L -o tools/bundletool-all-1.17.2.jar https://github.com/google/bundletool/releases/download/1.17.2/bundletool-all-1.17.2.jar
+          for i in 1 2 3; do
+            curl -f -L -o tools/bundletool-all-1.17.2.jar https://github.com/google/bundletool/releases/download/1.17.2/bundletool-all-1.17.2.jar && break
+            echo "::warning::Bundletool download attempt $i failed (exit $?), retrying in 5s..."
+            sleep 5
+          done
+          if [ ! -f tools/bundletool-all-1.17.2.jar ]; then
+            echo "::error::Failed to download bundletool after 3 attempts"
+            exit 1
+          fi
         fi
 
     - name: Extract APK from Bundle
