@@ -61,7 +61,7 @@ jobs:
         if [ -n "$b64" ] && echo "$b64" | base64 --decode > app/keystores/prod.keystore 2>/dev/null; then
           echo "Production keystore decoded successfully."
         else
-          echo "::warning::PROD_KEYSTORE secret is missing or not valid base64. Using empty file; signing will be skipped."
+          echo "::warning::PROD_KEYSTORE secret is missing or not valid base64. Using empty file; signing will be skipped (build continues)."
           true > app/keystores/prod.keystore
         fi
         cat <<EOF > app/keystores/prod-keystore.properties
@@ -108,7 +108,14 @@ jobs:
         fi
 
     - name: Write BuildConfig debug log
-      run: ./gradlew :app:writeBuildConfigDebugLog -PdebugLogDir="${{ github.workspace }}"
+      run: |
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"G1","location":"workflow","message":"step_start","data":{"step":"writeBuildConfigDebugLog"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
+        ./gradlew :app:writeBuildConfigDebugLog -PdebugLogDir="${{ github.workspace }}"
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"G1","location":"workflow","message":"step_ok","data":{"step":"writeBuildConfigDebugLog"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
 
     - name: Show debug log location
       if: always()
@@ -123,7 +130,14 @@ jobs:
         STEAMGRIDDB_API_KEY: ${{ secrets.STEAMGRIDDB_API_KEY }}
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      run: ./gradlew :app:bundleRelease
+      run: |
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"G2","location":"workflow","message":"step_start","data":{"step":"bundleRelease"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
+        ./gradlew :app:bundleRelease
+        # #region agent log
+        echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"G2","location":"workflow","message":"step_ok","data":{"step":"bundleRelease"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
+        # #endregion
 
     - name: Upload debug log
       if: always()
