@@ -227,6 +227,15 @@ jobs:
             --ks-pass "pass:$PROD_STORE_PASS" \
             --key-pass "pass:$PROD_KEY_PASS"; then
             mv universal-signed.apk universal.apk
+          elif "${BUILD_TOOLS_DIR}/apksigner" sign \
+            --in universal.apk \
+            --out universal-signed.apk \
+            --ks app/keystores/keystore \
+            --ks-key-alias "$DEBUG_ALIAS" \
+            --ks-pass "pass:$DEBUG_STORE_PASS" \
+            --key-pass "pass:$DEBUG_KEY_PASS"; then
+            mv universal-signed.apk universal.apk
+            echo "::notice::Dual signing skipped (v3 requires SigningCertificateLineage). Signed with single keystore (KEYSTORE)."
           else
             echo "::warning::Dual signing failed (check KEYSTORE/PROD_KEYSTORE secrets and passwords). Uploading unsigned APK."
           fi
