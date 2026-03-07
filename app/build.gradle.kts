@@ -402,8 +402,8 @@ gradle.projectsLoaded {
 project.afterEvaluate {
     try {
         val releaseVariant = android.applicationVariants.find { it.name == "release" }
-        val signingName = releaseVariant?.signingConfig?.name ?: "null"
-        debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"config","hypothesisId":"H1","location":"app/build.gradle.kts","message":"release signing","data":{"releaseSigningConfig":"$signingName"},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+        val signingLabel = (releaseVariant?.signingConfig?.toString() ?: "null").replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", " ")
+        debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"config","hypothesisId":"H1","location":"app/build.gradle.kts","message":"release signing","data":{"releaseSigningConfig":"$signingLabel"},"timestamp":${System.currentTimeMillis()}}""" + "\n")
         tasks.findByName("bundleRelease")?.let { bundleTask ->
             bundleTask.doFirst {
                 try { debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"build","hypothesisId":"H2","location":"app/build.gradle.kts","message":"bundleRelease started","data":{},"timestamp":${System.currentTimeMillis()}}""" + "\n") } catch (_: Throwable) { }
