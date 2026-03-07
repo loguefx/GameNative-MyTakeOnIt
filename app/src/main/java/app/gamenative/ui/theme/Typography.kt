@@ -1,6 +1,7 @@
 package app.gamenative.ui.theme
 
 import androidx.compose.material3.Typography
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -15,6 +16,7 @@ import app.gamenative.R
 val GameNativeFontFamily: FontFamily get() = Outfit
 
 // Outfit (variable font: single TTF supplies all weights via variation axis)
+@OptIn(ExperimentalTextApi::class)
 private val Outfit = FontFamily(
     Font(R.font.outfit_variable, FontWeight.Light, FontStyle.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(300))),
     Font(R.font.outfit_variable, FontWeight.Normal, FontStyle.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(400))),
