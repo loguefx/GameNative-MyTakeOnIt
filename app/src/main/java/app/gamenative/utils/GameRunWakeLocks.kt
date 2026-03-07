@@ -32,9 +32,9 @@ object GameRunWakeLocks {
         }
         val wifiManager = activity.applicationContext.getSystemService(Activity.WIFI_SERVICE) as? WifiManager
         if (wifiManager != null) {
-            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GameNative:GameWifi").apply {
-                acquire(10 * 60 * 60 * 1000L)
-            }
+            val wifiLockInstance = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GameNative:GameWifi")
+            wifiLockInstance.acquire(10 * 60 * 60 * 1000L)
+            wifiLock = wifiLockInstance
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {

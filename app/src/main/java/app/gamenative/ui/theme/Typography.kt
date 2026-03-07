@@ -5,6 +5,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontLoadingStrategy
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
@@ -15,12 +16,12 @@ val GameNativeFontFamily: FontFamily get() = Outfit
 
 // Outfit (variable font: single TTF supplies all weights via variation axis)
 private val Outfit = FontFamily(
-    Font(R.font.outfit_variable, FontWeight.Light, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(300))),
-    Font(R.font.outfit_variable, FontWeight.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(400))),
-    Font(R.font.outfit_variable, FontWeight.Medium, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(500))),
-    Font(R.font.outfit_variable, FontWeight.SemiBold, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(600))),
-    Font(R.font.outfit_variable, FontWeight.Bold, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(700))),
-    Font(R.font.outfit_variable, FontWeight.ExtraBold, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(800))),
+    Font(R.font.outfit_variable, FontWeight.Light, FontStyle.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(300))),
+    Font(R.font.outfit_variable, FontWeight.Normal, FontStyle.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(400))),
+    Font(R.font.outfit_variable, FontWeight.Medium, FontStyle.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(500))),
+    Font(R.font.outfit_variable, FontWeight.SemiBold, FontStyle.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(600))),
+    Font(R.font.outfit_variable, FontWeight.Bold, FontStyle.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(700))),
+    Font(R.font.outfit_variable, FontWeight.ExtraBold, FontStyle.Normal, FontLoadingStrategy.Blocking, FontVariation.Settings(FontVariation.weight(800))),
 )
 
 // Bricolage Grotesque (kept for legacy use e.g. NavigationDialog)
