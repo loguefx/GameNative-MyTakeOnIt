@@ -218,7 +218,6 @@ jobs:
           if "${BUILD_TOOLS_DIR}/apksigner" sign \
             --in universal.apk \
             --out universal-signed.apk \
-            --lineage app/keystores/prod-debug.lineage \
             --ks app/keystores/keystore \
             --ks-key-alias "$DEBUG_ALIAS" \
             --ks-pass "pass:$DEBUG_STORE_PASS" \
