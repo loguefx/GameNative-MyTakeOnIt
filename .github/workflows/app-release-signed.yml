@@ -215,29 +215,40 @@ jobs:
           BUILD_TOOLS_DIR="${ANDROID_SDK_ROOT}/build-tools/34.0.0"
         fi
         if [ -s app/keystores/keystore ] && [ -s app/keystores/prod.keystore ]; then
-          if "${BUILD_TOOLS_DIR}/apksigner" sign \
-            --in universal.apk \
-            --out universal-signed.apk \
-            --ks app/keystores/keystore \
-            --ks-key-alias "$DEBUG_ALIAS" \
-            --ks-pass "pass:$DEBUG_STORE_PASS" \
-            --key-pass "pass:$DEBUG_KEY_PASS" \
-            --next-signer --ks app/keystores/prod.keystore \
-            --ks-key-alias "$PROD_ALIAS" \
-            --ks-pass "pass:$PROD_STORE_PASS" \
-            --key-pass "pass:$PROD_KEY_PASS"; then
-            mv universal-signed.apk universal.apk
-          elif "${BUILD_TOOLS_DIR}/apksigner" sign \
-            --in universal.apk \
-            --out universal-signed.apk \
-            --ks app/keystores/keystore \
-            --ks-key-alias "$DEBUG_ALIAS" \
-            --ks-pass "pass:$DEBUG_STORE_PASS" \
-            --key-pass "pass:$DEBUG_KEY_PASS"; then
-            mv universal-signed.apk universal.apk
-            echo "::notice::Dual signing skipped (v3 requires SigningCertificateLineage). Signed with single keystore (KEYSTORE)."
-          else
-            echo "::warning::Dual signing failed (check KEYSTORE/PROD_KEYSTORE secrets and passwords). Uploading unsigned APK."
+          DUAL_SIGNED=0
+          LINEAGE_FILE="app/keystores/generated.lineage"
+          if "${BUILD_TOOLS_DIR}/apksigner" rotate --out "$LINEAGE_FILE" \
+            --old-signer --ks app/keystores/keystore --ks-key-alias "$DEBUG_ALIAS" --ks-pass "pass:$DEBUG_STORE_PASS" --key-pass "pass:$DEBUG_KEY_PASS" \
+            --new-signer --ks app/keystores/prod.keystore --ks-key-alias "$PROD_ALIAS" --ks-pass "pass:$PROD_STORE_PASS" --key-pass "pass:$PROD_KEY_PASS" 2>/dev/null && [ -s "$LINEAGE_FILE" ]; then
+            if "${BUILD_TOOLS_DIR}/apksigner" sign \
+              --in universal.apk \
+              --out universal-signed.apk \
+              --lineage "$LINEAGE_FILE" \
+              --ks app/keystores/keystore \
+              --ks-key-alias "$DEBUG_ALIAS" \
+              --ks-pass "pass:$DEBUG_STORE_PASS" \
+              --key-pass "pass:$DEBUG_KEY_PASS" \
+              --next-signer --ks app/keystores/prod.keystore \
+              --ks-key-alias "$PROD_ALIAS" \
+              --ks-pass "pass:$PROD_STORE_PASS" \
+              --key-pass "pass:$PROD_KEY_PASS"; then
+              mv universal-signed.apk universal.apk
+              DUAL_SIGNED=1
+            fi
+          fi
+          if [ "$DUAL_SIGNED" = 0 ] && [ -s app/keystores/keystore ]; then
+            if "${BUILD_TOOLS_DIR}/apksigner" sign \
+              --in universal.apk \
+              --out universal-signed.apk \
+              --ks app/keystores/keystore \
+              --ks-key-alias "$DEBUG_ALIAS" \
+              --ks-pass "pass:$DEBUG_STORE_PASS" \
+              --key-pass "pass:$DEBUG_KEY_PASS"; then
+              mv universal-signed.apk universal.apk
+              echo "::notice::Dual signing skipped (lineage generation or dual sign failed). Signed with single keystore (KEYSTORE)."
+            else
+              echo "::warning::Dual signing failed (check KEYSTORE/PROD_KEYSTORE secrets and passwords). Uploading unsigned APK."
+            fi
           fi
         elif [ -s app/keystores/keystore ]; then
           if "${BUILD_TOOLS_DIR}/apksigner" sign \
