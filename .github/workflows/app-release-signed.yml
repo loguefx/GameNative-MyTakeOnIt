@@ -134,7 +134,7 @@ jobs:
         # #region agent log
         echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"G2","location":"workflow","message":"step_start","data":{"step":"bundleRelease"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
         # #endregion
-        ./gradlew :app:bundleRelease
+        ./gradlew :app:bundleRelease --stacktrace
         # #region agent log
         echo '{"sessionId":"e39ecc","runId":"ci","hypothesisId":"G2","location":"workflow","message":"step_ok","data":{"step":"bundleRelease"},"timestamp":'$(date +%s)000'}' >> debug-e39ecc.log
         # #endregion
