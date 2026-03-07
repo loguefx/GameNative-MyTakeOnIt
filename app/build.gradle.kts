@@ -390,3 +390,24 @@ tasks.register("writeBuildConfigDebugLog") {
     }
 }
 // #endregion
+
+// #region agent log – bundleRelease failure (session 6f24d2)
+val debugLog6f24d2 = File(project.rootProject.layout.projectDirectory.asFile, "debug-6f24d2.log")
+gradle.projectsLoaded {
+    val rootDir = project.rootProject.layout.projectDirectory.asFile.absolutePath
+    debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"config","hypothesisId":"H1","location":"app/build.gradle.kts","message":"Gradle config","data":{"rootDir":"$rootDir","keystorePropsExists":${keystoreProperties != null}},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+}
+project.afterEvaluate {
+    val releaseVariant = android.applicationVariants.find { it.name == "release" }
+    val signingName = releaseVariant?.signingConfig?.name ?: "null"
+    debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"config","hypothesisId":"H1","location":"app/build.gradle.kts","message":"release signing","data":{"releaseSigningConfig":"$signingName"},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+    tasks.named("bundleRelease").configure {
+        doFirst {
+            debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"build","hypothesisId":"H2","location":"app/build.gradle.kts","message":"bundleRelease started","data":{},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+        }
+        doLast {
+            debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"build","hypothesisId":"H2","location":"app/build.gradle.kts","message":"bundleRelease completed","data":{},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+        }
+    }
+}
+// #endregion

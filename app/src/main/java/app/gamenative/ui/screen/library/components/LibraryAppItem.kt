@@ -157,7 +157,14 @@ internal fun AppItem(
             containerColor = if (isGrid) gnBgSurface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
         ),
         border = border,
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp, pressedElevation = 0.dp, hoveredElevation = 0.dp),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = 0.dp,
+            pressedElevation = 0.dp,
+            focusedElevation = 0.dp,
+            hoveredElevation = 0.dp,
+            draggedElevation = 0.dp,
+            disabledElevation = 0.dp,
+        ),
     ) {
         if (paneType == PaneType.LIST) {
             Row(
