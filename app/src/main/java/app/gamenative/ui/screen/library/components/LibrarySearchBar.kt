@@ -41,6 +41,7 @@ import app.gamenative.data.GameSource
 import app.gamenative.ui.data.LibraryState
 import app.gamenative.ui.internal.fakeAppInfo
 import app.gamenative.ui.theme.PluviaTheme
+import app.gamenative.ui.theme.gnBgElevated
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -121,8 +122,8 @@ internal fun LibrarySearchBar(
                 }
             },
             colors = TextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                focusedContainerColor = gnBgElevated,
+                unfocusedContainerColor = gnBgElevated,
                 focusedIndicatorColor = Color.Transparent,
                 unfocusedIndicatorColor = Color.Transparent,
             ),

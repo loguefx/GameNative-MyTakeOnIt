@@ -13,6 +13,7 @@ object GamePaths {
     private const val DIR_PREFIXES = "prefixes"
     private const val DIR_DXVK_CACHE = "dxvk_cache"
     private const val DIR_VKD3D_CACHE = "vkd3d_cache"
+    private const val DIR_MESA_CACHE = "mesa_cache"
 
     /**
      * Root directory for all isolation data (prefixes and caches).
@@ -59,7 +60,16 @@ object GamePaths {
     }
 
     /**
-     * Ensures all per-game directories exist (prefix, dxvk_cache, vkd3d_cache).
+     * Mesa shader cache directory for the given game.
+     * Path: isolationRoot/mesa_cache/<appId>/
+     * Set MESA_SHADER_CACHE_DIR to this path when launching.
+     */
+    fun getMesaCacheDir(context: Context, appId: String): File {
+        return File(getIsolationRoot(context), "$DIR_MESA_CACHE/$appId")
+    }
+
+    /**
+     * Ensures all per-game directories exist (prefix, dxvk_cache, vkd3d_cache, mesa_cache).
      * Call before launch so env vars point to existing dirs.
      */
     fun ensureGameDirs(context: Context, appId: String) {
@@ -67,6 +77,7 @@ object GamePaths {
         getDxvkCacheDir(context, appId).mkdirs()
         getVkd3dCacheDir(context, appId).mkdirs()
         getShaderCacheDir(context, appId).mkdirs()
+        getMesaCacheDir(context, appId).mkdirs()
     }
 
     /**
@@ -79,6 +90,7 @@ object GamePaths {
             "DXVK_STATE_CACHE_PATH" to getDxvkCacheDir(context, appId).absolutePath,
             "DXVK_LOG_PATH" to File(getDxvkCacheDir(context, appId), "dxvk.log").absolutePath,
             "VKD3D_SHADER_CACHE_PATH" to getVkd3dCacheDir(context, appId).absolutePath,
+            "MESA_SHADER_CACHE_DIR" to getMesaCacheDir(context, appId).absolutePath,
         )
     }
 }

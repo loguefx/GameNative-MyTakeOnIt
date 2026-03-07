@@ -25,8 +25,12 @@ object SteamGridDB {
     private const val API_BASE_URL = "https://www.steamgriddb.com/api/v2"
     private const val SEARCH_ENDPOINT = "/search/autocomplete"
     private const val GRIDS_ENDPOINT = "/grids/game"
+    /** Steam app ID → 600×900 portrait capsule (for 2:3 cards). Prefer over header/460×215. */
+    private const val GRIDS_STEAM_ENDPOINT = "/grids/steam"
     private const val HEROES_ENDPOINT = "/heroes/game"
     private const val LOGOS_ENDPOINT = "/logos/game"
+    private const val PORTRAIT_DIMENSIONS = "600x900"
+    private const val PORTRAIT_TYPE = "static"
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -182,6 +186,53 @@ object SteamGridDB {
             return@withContext Pair(outputFile.absolutePath, isHorizontal)
         } catch (e: Exception) {
             Timber.tag("SteamGridDB").e(e, "Error downloading image from $imageUrl")
+            return@withContext null
+        }
+    }
+
+    /**
+     * Fetch 600×900 portrait capsule for a Steam app (for 2:3 cards).
+     * Uses GET grids/steam/{steamAppId}?dimensions=600x900&type=static.
+     * @return Path to saved steamgriddb_grid_capsule file, or null
+     */
+    suspend fun fetchSteamPortraitCapsule(steamAppId: Int, gameFolder: File): String? = withContext(Dispatchers.IO) {
+        val apiKey = getApiKey() ?: return@withContext null
+        try {
+            val url = "$API_BASE_URL$GRIDS_STEAM_ENDPOINT/$steamAppId?dimensions=$PORTRAIT_DIMENSIONS&type=$PORTRAIT_TYPE"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer $apiKey")
+                .build()
+            val response = httpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                Timber.tag("SteamGridDB").w("Failed to fetch Steam portrait for $steamAppId - HTTP ${response.code}")
+                return@withContext null
+            }
+            val body = response.body?.string() ?: return@withContext null
+            val json = JSONObject(body)
+            if (!json.optBoolean("success", false)) return@withContext null
+            val dataArray = json.optJSONArray("data") ?: return@withContext null
+            if (dataArray.length() == 0) return@withContext null
+            val first = dataArray.getJSONObject(0)
+            val imageUrl = first.optString("url", "")
+            if (imageUrl.isEmpty()) return@withContext null
+            val extension = when {
+                imageUrl.contains(".png", ignoreCase = true) -> ".png"
+                imageUrl.contains(".jpg", ignoreCase = true) -> ".jpg"
+                imageUrl.contains(".jpeg", ignoreCase = true) -> ".jpg"
+                imageUrl.contains(".webp", ignoreCase = true) -> ".webp"
+                else -> ".png"
+            }
+            val imageRequest = Request.Builder().url(imageUrl).build()
+            val imageResponse = httpClient.newCall(imageRequest).execute()
+            if (!imageResponse.isSuccessful) return@withContext null
+            val imageBytes = imageResponse.body?.bytes() ?: return@withContext null
+            val capsuleFile = File(gameFolder, "steamgriddb_grid_capsule$extension")
+            FileOutputStream(capsuleFile).use { it.write(imageBytes) }
+            Timber.tag("SteamGridDB").i("Saved 600x900 portrait capsule for Steam app $steamAppId: ${capsuleFile.name}")
+            return@withContext capsuleFile.absolutePath
+        } catch (e: Exception) {
+            Timber.tag("SteamGridDB").e(e, "Error fetching Steam portrait for $steamAppId")
             return@withContext null
         }
     }
@@ -411,11 +462,13 @@ object SteamGridDB {
      * Also updates the release date if found.
      * @param gameName The name of the game to search for
      * @param gameFolderPath The path to the game folder where images should be saved
+     * @param steamAppId If non-null (Steam library game), fetches 600×900 portrait capsule via grids/steam/{id} first
      * @return ImageFetchResult containing paths to saved images and release date
      */
     suspend fun fetchGameImages(
         gameName: String,
-        gameFolderPath: String
+        gameFolderPath: String,
+        steamAppId: Int? = null
     ): ImageFetchResult = withContext(Dispatchers.IO) {
         val apiKey = getApiKey()
         if (apiKey == null) {
@@ -483,12 +536,26 @@ object SteamGridDB {
             )
         }
 
-        // Search for the game
-        val searchResult = searchGame(gameName) ?: return@withContext ImageFetchResult(null, null, null, null, null)
+        // For Steam games, fetch 600×900 portrait capsule first (grids/steam/{appId})
+        val capsuleFromSteam = steamAppId?.let { id ->
+            if (!existingGridCapsule) fetchSteamPortraitCapsule(id, gameFolder) else null
+        }
 
-        // Fetch grids (returns hero and capsule paths)
+        // Search for the game (for hero, logo, and fallback capsule if not from Steam)
+        val searchResult = searchGame(gameName) ?: return@withContext ImageFetchResult(
+            gridPath = null,
+            heroPath = null,
+            logoPath = null,
+            capsulePath = capsuleFromSteam,
+            releaseDate = null
+        )
+
+        // Fetch grids (returns hero and capsule paths); use Steam capsule if we got one
         val (gridHeroPath, gridCapsulePath) = if (!existingGridHero || !existingGridCapsule) {
-            fetchGrids(searchResult.gameId, gameFolder)
+            val fromGrids = fetchGrids(searchResult.gameId, gameFolder)
+            val heroPath = fromGrids.first
+            val capsulePath = capsuleFromSteam ?: fromGrids.second
+            Pair(heroPath, capsulePath)
         } else {
             val gridHeroFile = gameFolder.listFiles { file ->
                 file.isFile && file.name.startsWith("steamgriddb_grid_hero", ignoreCase = true) &&

@@ -4,10 +4,12 @@ import android.content.Context
 import app.gamenative.isolation.GamePaths
 import app.gamenative.preflight.PreflightResult
 import app.gamenative.preflight.PreflightRunner
+import app.gamenative.profile.GameProfileStore
 import app.gamenative.profile.LaunchProfile
 import app.gamenative.profile.ProfileStore
 import app.gamenative.supervisor.DiagnosticStore
 import app.gamenative.supervisor.LaunchSupervisor
+import com.winlator.core.envvars.EnvVars
 
 /**
  * Orchestrator: resolve profile → run preflight → either block with reason or allow launch.
@@ -46,5 +48,24 @@ object LaunchOrchestrator {
      */
     fun applyIsolationEnv(context: Context, appId: String, env: MutableMap<String, String>) {
         env.putAll(GamePaths.getIsolationEnv(context, appId))
+    }
+
+    /**
+     * Applies isolation env and per-game overrides to launch env. Call this **last** after
+     * DXVKHelper and all other env setup so per-game overrides (frameCap, asyncShaders, vsync) win.
+     */
+    fun applyIsolationEnv(context: Context, appId: String, envVars: EnvVars) {
+        GamePaths.getIsolationEnv(context, appId).forEach { (k, v) -> envVars.put(k, v) }
+        val overrides = GameProfileStore.load(context, appId) ?: return
+        if (overrides.frameCap != null) {
+            envVars.put("DXVK_FRAME_RATE", if (overrides.frameCap == 0) "0" else overrides.frameCap.toString())
+        }
+        if (overrides.asyncShaders != null) {
+            envVars.put("DXVK_ASYNC", if (overrides.asyncShaders) "1" else "0")
+            envVars.put("DXVK_GPLASYNCCACHE", if (overrides.asyncShaders) "1" else "0")
+        }
+        if (overrides.vsync != null) {
+            envVars.put("MESA_VK_WSI_PRESENT_MODE", if (overrides.vsync) "mailbox" else "immediate")
+        }
     }
 }

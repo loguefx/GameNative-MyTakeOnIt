@@ -33,6 +33,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.gamenative.data.LibraryItem
@@ -42,6 +48,10 @@ import app.gamenative.ui.internal.fakeAppInfo
 import app.gamenative.service.DownloadService
 import app.gamenative.service.SteamService
 import app.gamenative.ui.theme.PluviaTheme
+import app.gamenative.ui.theme.gnAccentSubtle
+import app.gamenative.ui.theme.gnBgDeepest
+import app.gamenative.ui.theme.gnBgSurface
+import app.gamenative.ui.theme.gnTextTertiary
 import app.gamenative.ui.component.topbar.AccountButton
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -209,11 +219,13 @@ internal fun LibraryListPane(
     val headerTopPadding = PaddingUtils.statusBarAwarePadding().calculateTopPadding()
 
     Scaffold(
+        containerColor = gnBgDeepest,
         snackbarHost = { SnackbarHost(snackBarHost) }
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(gnBgDeepest)
                 .padding(top = paddingValues.calculateTopPadding())
         ) {
             // Modern Header with gradient
@@ -246,9 +258,9 @@ internal fun LibraryListPane(
                                 app.gamenative.R.string.library_game_count,
                                 state.totalAppsInFilter,
                                 installedCount
-                            ),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            ).uppercase(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = gnTextTertiary,
                         )
                     }
 
@@ -294,6 +306,28 @@ internal fun LibraryListPane(
                         state = state,
                         listState = listState,
                         onSearchQuery = onSearchQuery,
+                    )
+                }
+            }
+
+            // Horizontal filter chips above the grid
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AppFilter.entries.forEach { filter ->
+                    FilterChip(
+                        selected = state.appInfoSortType.contains(filter),
+                        onClick = { onFilterChanged(filter) },
+                        label = { Text(text = filter.displayText) },
+                        leadingIcon = { Icon(imageVector = filter.icon, contentDescription = null) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = gnAccentSubtle,
+                            selectedLabelColor = MaterialTheme.colorScheme.onSurface,
+                        ),
                     )
                 }
             }
@@ -363,7 +397,7 @@ internal fun LibraryListPane(
                                 bottom = 72.dp
                             ),
                         ) {
-                            items(items = state.appInfoList, key = { it.index }) { item ->
+                            items(items = state.appInfoList, key = { "${it.gameSource}_${it.appId}" }) { item ->
                                 // Fade-in animation for items
                                 var isVisible by remember(item.index) { mutableStateOf(false) }
                                 val alpha by animateFloatAsState(
@@ -444,6 +478,7 @@ internal fun LibraryListPane(
                     ModalBottomSheet(
                         onDismissRequest = { onModalBottomSheet(false) },
                         sheetState = sheetState,
+                        containerColor = gnBgSurface,
                         content = {
                             LibraryBottomSheet(
                                 selectedFilters = state.appInfoSortType,

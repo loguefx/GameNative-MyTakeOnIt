@@ -1,13 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="window_background_color">#09090B</color>
-    <color name="colorPrimary">#a21caf</color>
-    <color name="colorPrimaryDark">#455a64</color>
-    <color name="colorAccent">#06B6D4</color>
-    <color name="navigation_dialog_item_color">#FAFAFA</color>
-    <color name="external_display_surface_background">#2B2B2B</color>
-    <color name="external_display_keyboard_background">#1F1F1F</color>
-    <color name="external_display_key_background">#3A3A3A</color>
-    <color name="external_display_key_highlight_background">#3D6CC4</color>
-    <color name="external_display_key_highlight_strong_background">#2E5AAC</color>
+    <!-- GameNative design system — Steam blue accent, dark surfaces. Do not use purple or Material defaults. -->
+
+    <!-- Background tier -->
+    <color name="gn_bg_deepest">#09090F</color>
+    <color name="gn_bg_surface">#12121C</color>
+    <color name="gn_bg_elevated">#1A1A28</color>
+    <color name="gn_bg_overlay">#22223A</color>
+
+    <!-- Accent (Steam blue) -->
+    <color name="gn_accent_primary">#1E9FFF</color>
+    <color name="gn_accent_glow">#3DB8FF</color>
+    <color name="gn_accent_dim">#1066A8</color>
+    <color name="gn_accent_subtle">#1E9FFF26</color>
+
+    <!-- Neon pops — badges and status only -->
+    <color name="gn_neon_teal">#00E5C3</color>
+    <color name="gn_neon_purple">#7C6EFA</color>
+    <color name="gn_neon_orange">#FF7B54</color>
+
+    <!-- Typography -->
+    <color name="gn_text_primary">#EEEEF5</color>
+    <color name="gn_text_secondary">#8A8AA8</color>
+    <color name="gn_text_tertiary">#505068</color>
+    <color name="gn_text_on_accent">#FFFFFF</color>
+
+    <!-- Status -->
+    <color name="gn_status_installed">#00E5C3</color>
+    <color name="gn_status_downloading">#1E9FFF</color>
+    <color name="gn_status_error">#FF4D6A</color>
+
+    <!-- Structure -->
+    <color name="gn_divider">#FFFFFF0F</color>
+    <color name="gn_border_card">#FFFFFF18</color>
+    <color name="gn_scrim_art">#A0000000</color>
+
+    <!-- Legacy aliases for existing code -->
+    <color name="colorPrimary">@color/gn_accent_primary</color>
+    <color name="colorPrimaryDark">@color/gn_bg_deepest</color>
+    <color name="colorAccent">@color/gn_accent_glow</color>
+    <color name="window_background_color">@color/gn_bg_deepest</color>
+    <color name="windowBackground">@color/gn_bg_deepest</color>
+    <color name="navigation_dialog_item_color">@color/gn_text_primary</color>
+    <color name="external_display_surface_background">@color/gn_bg_elevated</color>
+    <color name="external_display_keyboard_background">@color/gn_bg_surface</color>
+    <color name="external_display_key_background">@color/gn_bg_overlay</color>
+    <color name="external_display_key_highlight_background">@color/gn_accent_primary</color>
+    <color name="external_display_key_highlight_strong_background">@color/gn_accent_dim</color>
 </resources>

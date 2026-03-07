@@ -78,6 +78,8 @@ import android.widget.Toast
 import app.gamenative.ui.component.settings.SettingsListDropdown
 import app.gamenative.ui.data.XServerState
 import app.gamenative.ui.theme.settingsTileColors
+import app.gamenative.isolation.GamePaths
+import java.io.File
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.CustomGameScanner
 import app.gamenative.utils.PreLaunchSteps
@@ -970,6 +972,7 @@ fun XServerScreen(
                                 onGameLaunchError,
                                 navigateBack,
                             )
+                            (context as? Activity)?.let { app.gamenative.utils.GameRunWakeLocks.acquire(it) }
                         } catch (e: Exception) {
                             Timber.e(e, "Error during wine setup operations")
                             onGameLaunchError?.invoke("Failed to setup wine: ${e.message}")
@@ -1185,6 +1188,19 @@ fun XServerScreen(
 
             if (container.isDisableMouseInput){
                 PluviaApp.touchpadView?.setTouchscreenMouseDisabled(true);
+            }
+
+            // Shader compilation overlay: only on first launch when DXVK state cache is empty (avoids 90s block on warm launches)
+            val cacheDir = GamePaths.getDxvkCacheDir(context, appId)
+            val hasPopulatedCache = cacheDir.exists() && cacheDir.listFiles()?.any { it.isFile && it.length() > 0 } == true
+            if (!hasPopulatedCache) {
+                val shaderOverlay = android.view.LayoutInflater.from(context).inflate(R.layout.shader_progress_overlay, frameLayout, false)
+                frameLayout.addView(shaderOverlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                shaderOverlay.postDelayed({
+                    if (shaderOverlay.isAttachedToWindow) {
+                        shaderOverlay.visibility = View.GONE
+                    }
+                }, 90_000L)
             }
 
             mainRoot
@@ -1775,7 +1791,6 @@ private fun setupXEnvironment(
     envVars.put("MESA_DEBUG", "silent")
     envVars.put("MESA_NO_ERROR", "1")
     envVars.put("WINEPREFIX", imageFs.wineprefix)
-    app.gamenative.isolation.GamePaths.getIsolationEnv(context, appId).forEach { (k, v) -> envVars.put(k, v) }
     if (container.isShowFPS){
         envVars.put("DXVK_HUD", "fps,frametimes")
         envVars.put("VK_INSTANCE_LAYERS", "VK_LAYER_MESA_overlay")
@@ -1978,6 +1993,8 @@ private fun setupXEnvironment(
         environment.addComponent(VortekRendererComponent(xServer, UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.VORTEK_SERVER_PATH), options2, context))
     }
 
+    // Isolation env + per-game overrides last so they win over DXVKHelper base config
+    app.gamenative.launch.LaunchOrchestrator.applyIsolationEnv(context, appId, envVars)
     guestProgramLauncherComponent.envVars = envVars
     guestProgramLauncherComponent.setTerminationCallback { status ->
         if (status != 0) {
@@ -2339,6 +2356,7 @@ private fun exit(winHandler: WinHandler?, environment: XEnvironment?, frameRatin
     winHandler?.stop()
     environment?.stopEnvironmentComponents()
     SteamService.keepAlive = false
+    app.gamenative.utils.GameRunWakeLocks.release()
     // AppUtils.restartApplication(this)
     // PluviaApp.xServerState = null
     // PluviaApp.xServer = null
@@ -3455,6 +3473,14 @@ private fun extractGraphicsDriverFiles(
             envVars.put("VKBASALT_CONFIG", vkbasaltConfig)
         }
     }
+
+    // Mesa shader cache and performance (5C): applied for both Glibc and Bionic
+    envVars.put("MESA_SHADER_CACHE_MAX_SIZE", "512MB")
+    envVars.put("MESA_GLTHREAD", "true")
+    envVars.put("GALLIUM_HUD", "none")
+    val tuDebug = envVars.get("TU_DEBUG")
+    if (!tuDebug.contains("noconform")) envVars.put("TU_DEBUG", (if (tuDebug.isEmpty()) "" else "$tuDebug,") + "noconform")
+    if (File(imageFs.getLib64Dir(), "libvulkan_freedreno.so").exists()) envVars.put("MESA_LOADER_DRIVER_OVERRIDE", "zink")
 }
 
 private fun extractSteamFiles(

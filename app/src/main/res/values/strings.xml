@@ -1027,4 +1027,15 @@
     <string name="manifest_content_untrusted">Content is not trusted and was not installed.</string>
     <string name="manifest_type_mismatch">Downloaded content does not match expected type.</string>
     <string name="manifest_glibc_not_supported">GLIBC builds are not supported.</string>
+    <string name="shader_building_title">Building shaders…</string>
+    <string name="shader_building_subtitle">This only happens once. Don’t force-quit — the cache will be ready soon.</string>
+    <string name="game_settings_title">Game settings</string>
+    <string name="game_settings_frame_cap">Frame cap</string>
+    <string name="game_settings_frame_cap_uncapped">Uncapped</string>
+    <string name="game_settings_resolution_scale">Resolution scale</string>
+    <string name="game_settings_async_shaders">Async shaders</string>
+    <string name="game_settings_vsync">VSync</string>
+    <string name="game_settings_dx_override">DX version override</string>
+    <string name="game_settings_dx_auto">Auto</string>
+    <string name="game_settings_save">Save</string>
 </resources>

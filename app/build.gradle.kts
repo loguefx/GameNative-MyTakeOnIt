@@ -296,6 +296,7 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.bundles.compose)
     implementation(libs.landscapist.coil)
+    implementation("com.facebook.shimmer:shimmer:0.5.0")
     debugImplementation(libs.androidx.ui.tooling)
 
     // Support

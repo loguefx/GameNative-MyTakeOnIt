@@ -273,6 +273,8 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         envVars.put("WINE_X11FORCEGLX", "1");
         envVars.put("WINE_GST_NO_GL", "1");
         envVars.put("SteamGameId", "0");
+        envVars.put("WINEFSYNC", "1");
+        envVars.put("__GL_THREADED_OPTIMIZATIONS", "1");
 
         String primaryDNS = "8.8.4.4";
         ConnectivityManager connectivityManager = (ConnectivityManager) context.getSystemService(Service.CONNECTIVITY_SERVICE);
@@ -329,6 +331,9 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         else {
             command = getFinalCommand(winePath, emulator, envVars, imageFs.getBinDir(), guestExecutable);
         }
+
+        // 5D: ulimit in same process as Wine — wrap in shell that sets ulimit then exec's the command
+        command = "sh -c \"ulimit -n 1048576 && exec " + command.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
 
         // **Maybe remove this: Set execute permissions for box64 if necessary (Glibc/Proot artifact)
         File box64File = new File(rootDir, "/usr/bin/box64");
@@ -436,7 +441,10 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         if (enableLogs) {
             envVars.put("BOX64_LOG", "1");
             envVars.put("BOX64_DYNAREC_MISSING", "1");
+        } else {
+            envVars.put("BOX64_LOG", "0"); // GameNative: silent in release; logging is expensive
         }
+        envVars.put("BOX64_TEMPDIR", "/tmp/box64cache"); // JIT code cache; tmpfs for speed
 
         envVars.putAll(Box86_64PresetManager.getEnvVars("box64", environment.getContext(), box64Preset));
         envVars.put("BOX64_X11GLX", "1");

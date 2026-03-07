@@ -19,6 +19,7 @@ public class DXVKHelper {
         ImageFs imageFs = ImageFs.find(context);
         envVars.put("DXVK_STATE_CACHE_PATH", "/data/data/app.gamenative/files/imagefs"+ImageFs.CACHE_PATH);
         envVars.put("DXVK_LOG_LEVEL", "none");
+        envVars.put("DXVK_HUD", "none");
 
         File rootDir = ImageFs.find(context).getRootDir();
         File dxvkConfigFile = new File(imageFs.config_path+"/dxvk.conf");
@@ -53,6 +54,8 @@ public class DXVKHelper {
         String async = config.get("async");
         if (!async.isEmpty() && !async.equals("0"))
             envVars.put("DXVK_ASYNC", "1");
+        else if (async.isEmpty() || async.equals("0"))
+            envVars.put("DXVK_ASYNC", "1"); // Default on for GameNative: avoids render-thread stutter
 
         String asyncCache = config.get("asyncCache");
         if (!asyncCache.isEmpty() && !asyncCache.equals("0"))
@@ -67,5 +70,14 @@ public class DXVKHelper {
     public static void setVKD3DEnvVars(Context context, KeyValueSet config, EnvVars envVars) {
         String featureLevel = config.get("vkd3dFeatureLevel", "12_1");
         envVars.put("VKD3D_FEATURE_LEVEL", featureLevel);
+        // GameNative performance: pipeline cache, no RT (Adreno has none), worker threads, no debug
+        envVars.put("VKD3D_CONFIG", "pipeline_library_app_cache,no_upload_hvv");
+        envVars.put("VKD3D_DISABLE_EXTENSIONS", "VK_KHR_ray_tracing_pipeline,VK_KHR_ray_query");
+        envVars.put("VKD3D_WORKER_THREAD_COUNT", "4");
+        envVars.put("VKD3D_DEBUG", "none");
+        envVars.put("VKD3D_SHADER_DEBUG", "none");
+        // Cache path: use same base as DXVK so per-game isolation can override via LaunchOrchestrator
+        ImageFs imageFs = ImageFs.find(context);
+        envVars.put("VKD3D_SHADER_CACHE_PATH", "/data/data/app.gamenative/files/imagefs" + ImageFs.CACHE_PATH + "/vkd3d_cache");
     }
 }

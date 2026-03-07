@@ -8,6 +8,8 @@ import app.gamenative.service.SteamService
 import app.gamenative.service.epic.EpicService
 import app.gamenative.service.gog.GOGConstants
 import app.gamenative.service.gog.GOGService
+import app.gamenative.profile.GameProfileOverrides
+import app.gamenative.profile.GameProfileStore
 import app.gamenative.utils.BestConfigService
 import app.gamenative.utils.CustomGameScanner
 import com.winlator.container.Container
@@ -850,9 +852,44 @@ object ContainerUtils {
             }
         }
 
+        // Per-game overrides (resolution scale, DX version) win over base/best config
+        containerData = applyPerGameContainerOverrides(context, appId, containerData)
+
         // Apply container data with the determined DX wrapper
         applyToContainer(context, container, containerData)
         return container
+    }
+
+    /**
+     * Applies per-game profile overrides to container data (resolutionScale, dxVersionOverride).
+     * Used in createNewContainer and when saving from Game Settings so existing containers get updated.
+     */
+    fun applyPerGameContainerOverrides(context: Context, appId: String, containerData: ContainerData): ContainerData {
+        val overrides = GameProfileStore.load(context, appId) ?: return containerData
+        var result = containerData
+        if (overrides.resolutionScale != null && overrides.resolutionScale > 0f) {
+            val scale = overrides.resolutionScale
+            val parts = containerData.screenSize.split("x", ignoreCase = true)
+            if (parts.size >= 2) {
+                val w = (parts[0].toIntOrNull() ?: 1280) * scale
+                val h = (parts[1].toIntOrNull() ?: 720) * scale
+                val newW = (w / 2).toInt() * 2
+                val newH = (h / 2).toInt() * 2
+                if (newW > 0 && newH > 0) {
+                    result = result.copy(screenSize = "${maxOf(1, newW)}x${maxOf(1, newH)}")
+                }
+            }
+        }
+        if (overrides.dxVersionOverride != null && overrides.dxVersionOverride != GameProfileOverrides.DX_AUTO) {
+            val wrapper = when (overrides.dxVersionOverride.uppercase()) {
+                GameProfileOverrides.DX_9 -> "wined3d"
+                GameProfileOverrides.DX_10, GameProfileOverrides.DX_11 -> "dxvk"
+                GameProfileOverrides.DX_12 -> "vkd3d"
+                else -> result.dxwrapper
+            }
+            result = result.copy(dxwrapper = wrapper)
+        }
+        return result
     }
 
     fun getOrCreateContainer(context: Context, appId: String): Container {

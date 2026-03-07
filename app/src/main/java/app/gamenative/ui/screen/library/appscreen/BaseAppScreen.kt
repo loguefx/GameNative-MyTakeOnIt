@@ -8,6 +8,8 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +30,7 @@ import app.gamenative.data.GameSource
 import app.gamenative.data.LibraryItem
 import app.gamenative.events.AndroidEvent
 import app.gamenative.ui.component.dialog.ContainerConfigDialog
+import app.gamenative.ui.component.dialog.GameSettingsBottomSheet
 import app.gamenative.ui.component.dialog.LastRunDiagnosticsSection
 import app.gamenative.ui.data.AppMenuOption
 import app.gamenative.ui.data.GameDisplayInfo
@@ -311,6 +314,19 @@ abstract class BaseAppScreen {
         )
     }
 
+    @Composable
+    protected open fun getGameSettingsOption(
+        context: Context,
+        libraryItem: LibraryItem,
+        onShowGameSettings: (() -> Unit)?,
+    ): AppMenuOption? {
+        if (onShowGameSettings == null) return null
+        return AppMenuOption(
+            optionType = AppOptionMenuType.GameSettings,
+            onClick = onShowGameSettings,
+        )
+    }
+
     /**
      * Get source-specific menu options. Subclasses can override to add custom options.
      */
@@ -355,7 +371,8 @@ abstract class BaseAppScreen {
                                 steamgriddbFetched = false,
                             )
 
-                            SteamGridDB.fetchGameImages(gameName, gameFolderPath)
+                            val steamAppId = if (libraryItem.gameSource == GameSource.STEAM) libraryItem.gameId else null
+                            SteamGridDB.fetchGameImages(gameName, gameFolderPath, steamAppId = steamAppId)
                             PluviaApp.events.emit(AndroidEvent.CustomGameImagesFetched(libraryItem.appId))
                             onAfterFetchImages(context, libraryItem, gameFolderPath)
 
@@ -497,6 +514,7 @@ abstract class BaseAppScreen {
         onTestGraphics: () -> Unit,
         exportFrontendLauncher: ActivityResultLauncher<String>,
         onShowLastRunDiagnostics: (() -> Unit)? = null,
+        onShowGameSettings: (() -> Unit)? = null,
     ): List<AppMenuOption> {
         val isInstalled = isInstalled(context, libraryItem)
         val menuOptions = mutableListOf<AppMenuOption>()
@@ -509,6 +527,7 @@ abstract class BaseAppScreen {
             getRunContainerOption(context, libraryItem, onClickPlay)?.let { menuOptions.add(it) }
             getTestGraphicsOption(context, libraryItem, onTestGraphics)?.let { menuOptions.add(it) }
             getLastRunDiagnosticsOption(context, libraryItem, onShowLastRunDiagnostics)?.let { menuOptions.add(it) }
+            getGameSettingsOption(context, libraryItem, onShowGameSettings)?.let { menuOptions.add(it) }
             getResetContainerOption(context, libraryItem)?.let { menuOptions.add(it) }
             getCreateShortcutOption(context, libraryItem)?.let { menuOptions.add(it) }
             getExportContainerOption(context, libraryItem, exportFrontendLauncher)?.let { menuOptions.add(it) }
@@ -601,6 +620,9 @@ abstract class BaseAppScreen {
         var showDiagnosticsDialog by androidx.compose.runtime.remember {
             androidx.compose.runtime.mutableStateOf(false)
         }
+        var showGameSettingsSheet by androidx.compose.runtime.remember {
+            androidx.compose.runtime.mutableStateOf(false)
+        }
         var containerData by androidx.compose.runtime.remember {
             androidx.compose.runtime.mutableStateOf(ContainerData())
         }
@@ -646,7 +668,17 @@ abstract class BaseAppScreen {
             },
         )
 
-        val optionsMenu = getOptionsMenu(context, libraryItem, onEditContainer, onBack, onClickPlay, onTestGraphics, exportFrontendLauncher) { showDiagnosticsDialog = true }
+        val optionsMenu = getOptionsMenu(
+            context,
+            libraryItem,
+            onEditContainer,
+            onBack,
+            onClickPlay,
+            onTestGraphics,
+            exportFrontendLauncher,
+            onShowLastRunDiagnostics = { showDiagnosticsDialog = true },
+            onShowGameSettings = { showGameSettingsSheet = true },
+        )
 
         // Get download info based on game source for progress tracking
         val downloadInfo = when (libraryItem.gameSource) {
@@ -738,6 +770,19 @@ abstract class BaseAppScreen {
                     LastRunDiagnosticsSection(appId = libraryItem.appId)
                 },
             )
+        }
+
+        if (showGameSettingsSheet) {
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            ModalBottomSheet(
+                onDismissRequest = { showGameSettingsSheet = false },
+                sheetState = sheetState,
+            ) {
+                GameSettingsBottomSheet(
+                    appId = libraryItem.appId,
+                    onDismiss = { showGameSettingsSheet = false },
+                )
+            }
         }
 
         // Render any additional dialogs

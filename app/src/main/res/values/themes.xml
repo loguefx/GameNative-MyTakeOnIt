@@ -1,4 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Pluvia" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Pluvia" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Window and system bars -->
+        <item name="android:windowTranslucentStatus">false</item>
+        <item name="android:windowTranslucentNavigation">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+
+        <!-- GameNative palette -->
+        <item name="colorPrimary">@color/gn_accent_primary</item>
+        <item name="colorSurface">@color/gn_bg_surface</item>
+        <item name="colorSurfaceVariant">@color/gn_bg_elevated</item>
+        <item name="android:colorBackground">@color/gn_bg_deepest</item>
+        <item name="colorOnPrimary">@color/gn_text_on_accent</item>
+        <item name="colorOnSurface">@color/gn_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/gn_text_secondary</item>
+        <item name="colorOutline">@color/gn_text_tertiary</item>
+        <item name="colorError">@color/gn_status_error</item>
+
+        <!-- Elevation overlay tints elevated surfaces with accent -->
+        <item name="elevationOverlayEnabled">true</item>
+        <item name="elevationOverlayColor">@color/gn_accent_primary</item>
+
+        <!-- Ripple and control highlight -->
+        <item name="colorControlHighlight">@color/gn_accent_subtle</item>
+        <item name="android:colorControlHighlight">@color/gn_accent_subtle</item>
+        <item name="rippleColor">@color/gn_accent_subtle</item>
+    </style>
 </resources>

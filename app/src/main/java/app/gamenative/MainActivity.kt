@@ -130,7 +130,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(30, 30, 30)),
-            navigationBarStyle = SystemBarStyle.light(TRANSPARENT, TRANSPARENT),
+            // Match gnBgSurface (#12121C) so bottom nav bar blends with gnBgDeepest screen
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.parseColor("#12121C")),
         )
         super.onCreate(savedInstanceState)
 

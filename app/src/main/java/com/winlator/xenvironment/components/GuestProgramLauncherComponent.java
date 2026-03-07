@@ -190,7 +190,12 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         addBox64EnvVars(envVars, enableBox86_64Logs);
         if (this.envVars != null) envVars.putAll(this.envVars);
 
-        return exec(context, !wow64Mode, bindingPaths, envVars, terminationCallback, "box64 " + guestExecutable, workingDir);
+        // 5D/5E: sysctl and ulimit inside container (same shell as Wine). Wrapped in sh -c so they run inside proot.
+        String baseCmd = "box64 " + guestExecutable;
+        String script = "sysctl -w vm.max_map_count=2147483642 2>/dev/null; sysctl -w vm.swappiness=10 2>/dev/null; sysctl -w vm.dirty_background_ratio=5 2>/dev/null; sysctl -w vm.dirty_ratio=10 2>/dev/null; ulimit -n 1048576; exec " + baseCmd.replace("\\", "\\\\").replace("\"", "\\\"");
+        String prootCmd = "sh -c \"" + script + "\"";
+
+        return exec(context, !wow64Mode, bindingPaths, envVars, terminationCallback, prootCmd, workingDir);
     }
     public static int exec(Context context, String prootCmd) {
         return exec(context, false, new String[0], null, null, prootCmd, null);

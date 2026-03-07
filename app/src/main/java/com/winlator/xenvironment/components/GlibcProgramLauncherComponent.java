@@ -209,6 +209,8 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
         Log.d("GlibcProgramLauncherComponent", "About to execute box64 from: " + box64Path);
 
         String command = box64Path + " " + guestExecutable;
+        // 5D: ulimit in same process as Wine (Glibc host path has no proot, so no sysctl)
+        command = "sh -c \"ulimit -n 1048576 && exec " + command.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
         Log.d("GlibcProgramLauncherComponent", "Final command: " + command);
 
         return ProcessHelper.exec(command, envVars.toStringArray(), workingDir != null ? workingDir : rootDir, (status) -> {
@@ -249,7 +251,10 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
         if (enableLogs) {
             envVars.put("BOX64_LOG", "1");
             envVars.put("BOX64_DYNAREC_MISSING", "1");
+        } else {
+            envVars.put("BOX64_LOG", "0"); // GameNative: silent in release; logging is expensive
         }
+        envVars.put("BOX64_TEMPDIR", "/tmp/box64cache"); // JIT code cache; tmpfs for speed
 
         envVars.putAll(Box86_64PresetManager.getEnvVars("box64", environment.getContext(), box64Preset));
         String renderer = GPUInformation.getRenderer(context);
