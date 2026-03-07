@@ -158,7 +158,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONException
 import org.json.JSONObject
 import timber.log.Timber
-import java.io.File
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -3480,7 +3479,8 @@ private fun extractGraphicsDriverFiles(
     envVars.put("GALLIUM_HUD", "none")
     val tuDebug = envVars.get("TU_DEBUG")
     if (!tuDebug.contains("noconform")) envVars.put("TU_DEBUG", (if (tuDebug.isEmpty()) "" else "$tuDebug,") + "noconform")
-    if (File(imageFs.getLib64Dir(), "libvulkan_freedreno.so").exists()) envVars.put("MESA_LOADER_DRIVER_OVERRIDE", "zink")
+    val imageFsForMesa = ImageFs.find(context)
+    if (java.io.File(imageFsForMesa.getLib64Dir(), "libvulkan_freedreno.so").exists()) envVars.put("MESA_LOADER_DRIVER_OVERRIDE", "zink")
 }
 
 private fun extractSteamFiles(

@@ -23,12 +23,12 @@ object GameRunWakeLocks {
         activityRef = WeakReference(activity)
         val powerManager = activity.getSystemService(Activity.POWER_SERVICE) as? PowerManager
         if (powerManager != null) {
-            wakeLock = powerManager.newWakeLock(
+            val lock = powerManager.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "GameNative:GameRunning"
-            ).apply {
-                acquire(10 * 60 * 60 * 1000L) // 10 hours max; release on exit
-            }
+            )
+            lock.acquire(10 * 60 * 60 * 1000L) // 10 hours max; release on exit
+            wakeLock = lock
         }
         val wifiManager = activity.applicationContext.getSystemService(Activity.WIFI_SERVICE) as? WifiManager
         if (wifiManager != null) {

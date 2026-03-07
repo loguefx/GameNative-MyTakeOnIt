@@ -98,12 +98,13 @@ fun GameSettingsBottomSheet(
         }
 
         // Frame cap
+        val frameCapUncappedStr = stringResource(R.string.game_settings_frame_cap_uncapped)
         Text(text = stringResource(R.string.game_settings_frame_cap), style = MaterialTheme.typography.titleSmall)
         Spacer(modifier = Modifier.height(4.dp))
         RowOfOptions(
             current = frameCap ?: 60,
             options = FRAME_CAP_OPTIONS,
-            label = { if (it == 0) stringResource(R.string.game_settings_frame_cap_uncapped) else "$it" },
+            label = { if (it == 0) frameCapUncappedStr else "$it" },
             onSelect = { frameCap = it },
         )
         Spacer(modifier = Modifier.height(12.dp))
@@ -154,12 +155,13 @@ fun GameSettingsBottomSheet(
         Spacer(modifier = Modifier.height(12.dp))
 
         // DX override
+        val dxAutoStr = stringResource(R.string.game_settings_dx_auto)
         Text(text = stringResource(R.string.game_settings_dx_override), style = MaterialTheme.typography.titleSmall)
         Spacer(modifier = Modifier.height(4.dp))
         RowOfOptions(
             current = dxVersionOverride ?: GameProfileOverrides.DX_AUTO,
             options = DX_OVERRIDE_OPTIONS,
-            label = { if (it == GameProfileOverrides.DX_AUTO) stringResource(R.string.game_settings_dx_auto) else it },
+            label = { if (it == GameProfileOverrides.DX_AUTO) dxAutoStr else it },
             onSelect = { dxVersionOverride = it },
         )
         Spacer(modifier = Modifier.height(24.dp))

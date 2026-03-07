@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -558,6 +559,7 @@ abstract class BaseAppScreen {
      * Get the main content composable for this screen.
      * This uses the common UI layout from AppScreenContent.
      */
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun Content(
         libraryItem: LibraryItem,

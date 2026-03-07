@@ -232,8 +232,6 @@ internal fun AppItem(
             }
         }
     }
-}
-
 @Composable
 private fun GridCardContent(
     appInfo: LibraryItem,
