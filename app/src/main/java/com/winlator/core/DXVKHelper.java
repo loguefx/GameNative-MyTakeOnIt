@@ -21,6 +21,15 @@ public class DXVKHelper {
         envVars.put("DXVK_LOG_LEVEL", "none");
         envVars.put("DXVK_HUD", "none");
 
+        // Task 3 — Audio: 60ms Pulse buffer so Wine audio thread doesn't block the game thread
+        envVars.put("PULSE_LATENCY_MSEC", "60");
+        String existingOverrides = envVars.get("WINEDLLOVERRIDES");
+        String appendOverrides = "winepulse.drv=n,b;d3d8=n,b"; // Task 6 — D8VK for DX8 games
+        envVars.put("WINEDLLOVERRIDES",
+            (existingOverrides == null || existingOverrides.trim().isEmpty())
+                ? appendOverrides
+                : existingOverrides + ";" + appendOverrides);
+
         File rootDir = ImageFs.find(context).getRootDir();
         File dxvkConfigFile = new File(imageFs.config_path+"/dxvk.conf");
 
@@ -71,7 +80,15 @@ public class DXVKHelper {
         String featureLevel = config.get("vkd3dFeatureLevel", "12_1");
         envVars.put("VKD3D_FEATURE_LEVEL", featureLevel);
         // GameNative performance: pipeline cache, no RT (Adreno has none), worker threads, no debug
-        envVars.put("VKD3D_CONFIG", "pipeline_library_app_cache,no_upload_hvv");
+        // Task 10 — Append force_static_cbv to reduce descriptor heap pressure in large DX12 games
+        String existingVkd3dConfig = envVars.get("VKD3D_CONFIG");
+        if (existingVkd3dConfig == null || existingVkd3dConfig.isEmpty())
+            existingVkd3dConfig = "pipeline_library_app_cache,no_upload_hvv";
+        if (!existingVkd3dConfig.contains("force_static_cbv"))
+            existingVkd3dConfig = existingVkd3dConfig + ",force_static_cbv";
+        envVars.put("VKD3D_CONFIG", existingVkd3dConfig);
+        envVars.put("VKD3D_DESCRIPTOR_QA_CHECKS", "0");
+        envVars.put("VKD3D_SHADER_MODEL", "6_5");
         envVars.put("VKD3D_DISABLE_EXTENSIONS", "VK_KHR_ray_tracing_pipeline,VK_KHR_ray_query");
         envVars.put("VKD3D_WORKER_THREAD_COUNT", "4");
         envVars.put("VKD3D_DEBUG", "none");

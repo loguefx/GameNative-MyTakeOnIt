@@ -21,7 +21,9 @@ import com.winlator.xenvironment.EnvironmentComponent;
 import com.winlator.xenvironment.ImageFs;
 import com.winlator.xenvironment.XEnvironment;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
 import java.util.Arrays;
 import java.util.List;
 
@@ -191,8 +193,11 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         if (this.envVars != null) envVars.putAll(this.envVars);
 
         // 5D/5E: sysctl and ulimit inside container (same shell as Wine). Wrapped in sh -c so they run inside proot.
+        // Task 2: page-cluster and sched_migration_cost_ns for ZRAM and cache-warm game threads.
+        // Task 8: transparent huge pages for Box64 JIT.
         String baseCmd = "box64 " + guestExecutable;
-        String script = "sysctl -w vm.max_map_count=2147483642 2>/dev/null; sysctl -w vm.swappiness=10 2>/dev/null; sysctl -w vm.dirty_background_ratio=5 2>/dev/null; sysctl -w vm.dirty_ratio=10 2>/dev/null; ulimit -n 1048576; exec " + baseCmd.replace("\\", "\\\\").replace("\"", "\\\"");
+        // Task 7: renice Wine for input priority (optional)
+        String script = "sysctl -w vm.max_map_count=2147483642 2>/dev/null; sysctl -w vm.swappiness=10 2>/dev/null; sysctl -w vm.dirty_background_ratio=5 2>/dev/null; sysctl -w vm.dirty_ratio=10 2>/dev/null; sysctl -w vm.page-cluster=0 2>/dev/null; sysctl -w kernel.sched_migration_cost_ns=5000000 2>/dev/null; echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true; echo defer+madvise > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true; ulimit -n 1048576; (sleep 2; renice -n -5 -p $(pgrep -f wine | head -1) 2>/dev/null) & exec " + baseCmd.replace("\\", "\\\\").replace("\"", "\\\"");
         String prootCmd = "sh -c \"" + script + "\"";
 
         return exec(context, !wow64Mode, bindingPaths, envVars, terminationCallback, prootCmd, workingDir);
@@ -364,6 +369,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         envVars.put("BOX64_DYNAREC", "1");
         if (wow64Mode) envVars.put("BOX64_MMAP32", "1");
         envVars.put("BOX64_AVX", "1");
+        envVars.put("BOX64_DYNAREC_ALIGNED_ATOMICS", "1"); // Task 8: pairs with THP for JIT
 
         if (enableLogs) {
             envVars.put("BOX64_LOG", "1");
@@ -389,5 +395,127 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
 
     public String execShellCommand(String command, boolean includeStderr){
         return "";
+    }
+
+    /**
+     * Runs a shell command inside the proot container and returns stdout.
+     * Used for CPU affinity (pgrep) and other container-internal commands.
+     * Must be called with same bindingPaths as the running game (e.g. from container.drives).
+     */
+    public static String execInContainerWithOutput(android.content.Context context, boolean proot32,
+            String[] bindingPaths, EnvVars extraVars, File workingDir, String shellCommand) {
+        ImageFs imageFs = ImageFs.find(context);
+        File rootDir = imageFs.getRootDir();
+        File tmpDir = XEnvironment.getTmpDir(context);
+        String nativeLibraryDir = context.getApplicationInfo().nativeLibraryDir;
+        EnvVars envVars = new EnvVars();
+        android.icu.util.TimeZone androidTz = android.icu.util.TimeZone.getDefault();
+        String tzId = androidTz.getID();
+        envVars.put("TZ", tzId);
+        envVars.put("HOME", ImageFs.HOME_PATH);
+        envVars.put("USER", ImageFs.USER);
+        envVars.put("TMPDIR", "/tmp");
+        envVars.put("LC_ALL", "en_US.utf8");
+        envVars.put("DISPLAY", ":0");
+        envVars.put("PATH", imageFs.getWinePath() + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        envVars.put("LD_LIBRARY_PATH", "/usr/lib/aarch64-linux-gnu:/usr/lib/arm-linux-gnueabihf");
+        envVars.put("ANDROID_SYSVSHM_SERVER", UnixSocketConfig.SYSVSHM_SERVER_PATH);
+        if ((new File(imageFs.getLib64Dir(), "libandroid-sysvshm.so")).exists()
+                || (new File(imageFs.getLib32Dir(), "libandroid-sysvshm.so")).exists())
+            envVars.put("LD_PRELOAD", "libandroid-sysvshm.so");
+        if (extraVars != null) envVars.putAll(extraVars);
+        boolean bindSHM = envVars.get("WINEESYNC").equals("1");
+        String command = nativeLibraryDir + "/libproot.so";
+        command += " --kill-on-exit";
+        command += " --rootfs=" + rootDir;
+        command += " --cwd=" + ImageFs.HOME_PATH;
+        command += " --bind=/dev";
+        if (bindSHM) {
+            File shmDir = new File(rootDir, "/tmp/shm");
+            shmDir.mkdirs();
+            command += " --bind=" + shmDir.getAbsolutePath() + ":/dev/shm";
+        }
+        command += " --bind=/proc";
+        command += " --bind=/sys";
+        if (bindingPaths != null) {
+            for (String path : bindingPaths)
+                command += " --bind=\"" + (new File(path)).getAbsolutePath() + "\"";
+        }
+        envVars.put("WINEESYNC", "0");
+        String prootCmd = "sh -c \"" + shellCommand.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        command += " /usr/bin/env " + envVars.toEscapedString() + " " + prootCmd;
+        envVars.clear();
+        envVars.put("PROOT_TMP_DIR", tmpDir);
+        envVars.put("PROOT_LOADER", nativeLibraryDir + "/libproot-loader.so");
+        if (proot32) envVars.put("PROOT_LOADER_32", nativeLibraryDir + "/libproot-loader32.so");
+        try {
+            Process process = Runtime.getRuntime().exec(
+                    ProcessHelper.splitCommand(command),
+                    envVars.toStringArray(),
+                    workingDir != null ? workingDir : rootDir);
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (out.length() > 0) out.append('\n');
+                    out.append(line);
+                }
+            }
+            process.waitFor();
+            return out.toString().trim();
+        } catch (Exception e) {
+            Log.e("GuestProgramLauncherComponent", "execInContainerWithOutput failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** Runs a shell command inside the proot container (fire-and-forget). */
+    public static void execInContainer(android.content.Context context, boolean proot32,
+            String[] bindingPaths, EnvVars extraVars, File workingDir, String shellCommand) {
+        ImageFs imageFs = ImageFs.find(context);
+        File rootDir = imageFs.getRootDir();
+        File tmpDir = XEnvironment.getTmpDir(context);
+        String nativeLibraryDir = context.getApplicationInfo().nativeLibraryDir;
+        EnvVars envVars = new EnvVars();
+        android.icu.util.TimeZone androidTz = android.icu.util.TimeZone.getDefault();
+        String tzId = androidTz.getID();
+        envVars.put("TZ", tzId);
+        envVars.put("HOME", ImageFs.HOME_PATH);
+        envVars.put("USER", ImageFs.USER);
+        envVars.put("TMPDIR", "/tmp");
+        envVars.put("LC_ALL", "en_US.utf8");
+        envVars.put("DISPLAY", ":0");
+        envVars.put("PATH", imageFs.getWinePath() + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        envVars.put("LD_LIBRARY_PATH", "/usr/lib/aarch64-linux-gnu:/usr/lib/arm-linux-gnueabihf");
+        envVars.put("ANDROID_SYSVSHM_SERVER", UnixSocketConfig.SYSVSHM_SERVER_PATH);
+        if ((new File(imageFs.getLib64Dir(), "libandroid-sysvshm.so")).exists()
+                || (new File(imageFs.getLib32Dir(), "libandroid-sysvshm.so")).exists())
+            envVars.put("LD_PRELOAD", "libandroid-sysvshm.so");
+        if (extraVars != null) envVars.putAll(extraVars);
+        boolean bindSHM = envVars.get("WINEESYNC").equals("1");
+        String command = nativeLibraryDir + "/libproot.so";
+        command += " --kill-on-exit";
+        command += " --rootfs=" + rootDir;
+        command += " --cwd=" + ImageFs.HOME_PATH;
+        command += " --bind=/dev";
+        if (bindSHM) {
+            File shmDir = new File(rootDir, "/tmp/shm");
+            shmDir.mkdirs();
+            command += " --bind=" + shmDir.getAbsolutePath() + ":/dev/shm";
+        }
+        command += " --bind=/proc";
+        command += " --bind=/sys";
+        if (bindingPaths != null) {
+            for (String path : bindingPaths)
+                command += " --bind=\"" + (new File(path)).getAbsolutePath() + "\"";
+        }
+        envVars.put("WINEESYNC", "0");
+        String prootCmd = "sh -c \"" + shellCommand.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        command += " /usr/bin/env " + envVars.toEscapedString() + " " + prootCmd;
+        envVars.clear();
+        envVars.put("PROOT_TMP_DIR", tmpDir);
+        envVars.put("PROOT_LOADER", nativeLibraryDir + "/libproot-loader.so");
+        if (proot32) envVars.put("PROOT_LOADER_32", nativeLibraryDir + "/libproot-loader32.so");
+        ProcessHelper.exec(command, envVars.toStringArray(), workingDir != null ? workingDir : rootDir, null);
     }
 }

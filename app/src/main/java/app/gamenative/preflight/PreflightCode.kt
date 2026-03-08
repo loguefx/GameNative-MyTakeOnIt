@@ -14,5 +14,7 @@ enum class PreflightCode {
     DX12_DRIVER_BLACKLISTED,
     GAME_BINARY_MISSING,
     WINE_PREFIX_INVALID,
+    /** Crash cause 6 — Proton/Wine runtime path missing or invalid */
+    PROTON_PATH_NOT_FOUND,
     UNKNOWN,
 }

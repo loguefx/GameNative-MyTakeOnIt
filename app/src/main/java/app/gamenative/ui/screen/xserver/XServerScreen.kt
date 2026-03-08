@@ -7,6 +7,8 @@ import android.graphics.Color
 import android.os.Build
 import android.util.Log
 import android.view.Display
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -32,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -240,6 +243,17 @@ fun XServerScreen(
     Timber.i("Starting up XServerScreen")
     val context = LocalContext.current
     val view = LocalView.current
+    // Task 7 — Unbuffered input dispatch for lower touch/gamepad latency
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            view.requestUnbufferedDispatch(InputDevice.SOURCE_TOUCHSCREEN)
+            view.requestUnbufferedDispatch(InputDevice.SOURCE_GAMEPAD)
+            view.requestUnbufferedDispatch(InputDevice.SOURCE_JOYSTICK)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            @Suppress("DEPRECATION")
+            view.requestUnbufferedDispatch(MotionEvent.obtain(0, 0, MotionEvent.ACTION_MOVE, 0f, 0f, 0))
+        }
+    }
     val imm = remember(context) {
         context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
     }
@@ -1972,6 +1986,7 @@ private fun setupXEnvironment(
         val options = ALSAClient.Options.fromKeyValueSet(null)
         environment.addComponent(ALSAServerComponent(UnixSocketConfig.createSocket(imageFs.getRootDir().getPath(), UnixSocketConfig.ALSA_SERVER_PATH), options))
     } else if (xServerState.value.audioDriver == "pulseaudio") {
+        ContainerUtils.ensurePulseAudioLowLatencyConfig(context)
         envVars.put("PULSE_SERVER", imageFs.getRootDir().getPath() + UnixSocketConfig.PULSE_SERVER_PATH)
         environment.addComponent(PulseAudioComponent(UnixSocketConfig.createSocket(imageFs.getRootDir().getPath(), UnixSocketConfig.PULSE_SERVER_PATH)))
     }
@@ -1995,8 +2010,29 @@ private fun setupXEnvironment(
         environment.addComponent(VortekRendererComponent(xServer, UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.VORTEK_SERVER_PATH), options2, context))
     }
 
-    // Isolation env + per-game overrides last so they win over DXVKHelper base config
+    // Isolation env (paths + legacy overrides)
     app.gamenative.launch.LaunchOrchestrator.applyIsolationEnv(context, appId, envVars)
+    // GameConfig from store or recommender; apply last so KnownGameFixes.extraEnvVars win (put, not putIfAbsent)
+    val steamAppId = try {
+        app.gamenative.utils.ContainerUtils.extractGameIdFromContainerId(appId).toLong()
+    } catch (_: Exception) {
+        0L
+    }
+    if (steamAppId != 0L) {
+        val gameName = container?.name ?: ""
+        // runBlocking acceptable here: resolveGameConfig uses HardwareProfileCache.getProfile(), which
+        // returns cached profile quickly on launch path (slow detection only on first run or driver change).
+        val config = kotlinx.coroutines.runBlocking {
+            app.gamenative.launch.LaunchOrchestrator.resolveGameConfig(
+                context = context,
+                appId = appId,
+                gameName = gameName,
+                steamAppId = steamAppId,
+                saveIfFromRecommender = true,
+            )
+        }
+        app.gamenative.launch.LaunchOrchestrator.applyGameConfig(context, appId, config, envVars)
+    }
     guestProgramLauncherComponent.envVars = envVars
     guestProgramLauncherComponent.setTerminationCallback { status ->
         if (status != 0) {
@@ -2066,6 +2102,10 @@ private fun setupXEnvironment(
 
     environment.startEnvironmentComponents()
 
+    // Task 1 — CPU affinity: pin Wine process to P-cores inside container (Bionic/proot only)
+    CoroutineScope(Dispatchers.IO).launch {
+        ContainerUtils.applyCpuAffinityInContainer(context, appId)
+    }
     // put in separate scope since winhandler start method does some network stuff
     CoroutineScope(Dispatchers.IO).launch {
         xServer.winHandler.start()

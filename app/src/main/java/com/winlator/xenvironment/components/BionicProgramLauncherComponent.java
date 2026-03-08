@@ -445,6 +445,7 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             envVars.put("BOX64_LOG", "0"); // GameNative: silent in release; logging is expensive
         }
         envVars.put("BOX64_TEMPDIR", "/tmp/box64cache"); // JIT code cache; tmpfs for speed
+        envVars.put("BOX64_DYNAREC_ALIGNED_ATOMICS", "1"); // Task 8: pairs with THP for JIT
 
         envVars.putAll(Box86_64PresetManager.getEnvVars("box64", environment.getContext(), box64Preset));
         envVars.put("BOX64_X11GLX", "1");

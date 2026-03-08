@@ -1,0 +1,1022 @@
+---
+description: Hardware detection, per-game configuration system with recommended settings, and game compatibility layer. Fixes game boot crashes by detecting device hardware and applying optimal Proton/Wine/DXVK/GPU settings automatically. Apply when editing launch, container, game settings, or compatibility files.
+globs: ["**/*Launch*", "**/*Container*", "**/*DXVK*", "**/*GameSettings*", "**/*Config*", "**/*Hardware*", "**/*Compat*", "**/*Proton*"]
+alwaysApply: false
+---
+
+# GameNative — Hardware Detection + Game Configuration System
+
+## Why games are crashing on boot
+
+Games crash before launching for several specific reasons that the current
+app does not handle. Fix ALL of these before implementing the configuration UI:
+
+### Crash cause 1 — Wrong Proton/Wine version for the game
+Proton 10.0 is cutting-edge and some games are incompatible with it.
+Elden Ring, GTA V, and many others work better on Proton 8.0 or 9.0.
+The app must not hardcode Proton 10.0 for all games.
+
+### Crash cause 2 — Missing WINEPREFIX initialization
+If the Wine prefix does not exist or is corrupt, Wine crashes immediately
+with no useful error. The app must verify the prefix exists and is valid
+before launch, and re-create it if not.
+
+### Crash cause 3 — Wrong DX version detection
+The app may be forcing DX12 (VKD3D) on a DX9/DX11 game or vice versa.
+VKD3D attempting to initialize on a DX9 game causes an immediate crash.
+
+### Crash cause 4 — Turnip/Mesa version mismatch
+If the community Turnip .so version does not match the Mesa version
+in the container, Vulkan initialization fails silently and the game
+crashes at the black screen.
+
+### Crash cause 5 — vm.max_map_count not applied
+If the sysctl failed silently (non-root device, wrong container scope),
+games that need large map counts (Elden Ring needs 300k+) crash with
+"mmap failed" or allocator errors.
+
+### Crash cause 6 — Proton runtime path wrong
+If Proton is installed to a path the app cannot find, WINE env var
+points to nothing and the process exits immediately.
+
+---
+
+## PART 1 — Hardware Detection
+
+### HardwareProfile.kt
+
+Create this class. It must run ONCE on first app launch and cache the
+result. Re-read on app update.
+
+```kotlin
+data class HardwareProfile(
+    // CPU
+    val cpuSoC: String,               // "Snapdragon 8 Gen 3", "Dimensity 9300", etc.
+    val cpuCores: Int,                // total core count
+    val cpuPCoreCount: Int,           // performance core count
+    val cpuECoreCount: Int,           // efficiency core count
+    val cpuPCoreMask: String,         // hex mask e.g. "0xF0" for pinning
+    val cpuMaxFreqMhz: Int,           // highest P-core max clock
+
+    // GPU
+    val gpuVendor: GpuVendor,         // ADRENO, MALI, POWERVR, UNKNOWN
+    val gpuModel: String,             // "Adreno 750", "Mali-G715", etc.
+    val gpuOpenGLES: String,          // "3.2"
+    val gpuVulkanVersion: String,     // "1.3.255"
+    val gpuDriverVersion: String,     // raw GL_VERSION string
+    val supportsVulkan13: Boolean,
+    val supportsMeshShaders: Boolean,
+    val supportsRayTracing: Boolean,  // almost always false on mobile
+
+    // Memory
+    val totalRamMb: Int,
+    val availableRamMb: Int,
+    val storageType: StorageType,     // UFS_3_1, UFS_3_0, UFS_2_2, EMMC
+
+    // Display
+    val displayRefreshHz: Int,        // 60, 90, 120, 144, 165
+    val displayWidthPx: Int,
+    val displayHeightPx: Int,
+
+    // Thermal
+    val thermalHeadroom: Float,       // 0.0-1.0, from PowerManager.getThermalHeadroom
+    val sustainedPerformanceSupported: Boolean
+)
+
+enum class GpuVendor { ADRENO, MALI, POWERVR, UNKNOWN }
+enum class StorageType { UFS_3_1, UFS_3_0, UFS_2_2, EMMC, UNKNOWN }
+```
+
+### HardwareDetector.kt
+
+```kotlin
+object HardwareDetector {
+
+    fun detect(context: Context): HardwareProfile {
+        val activityManager = context.getSystemService(ActivityManager::class.java)
+        val powerManager = context.getSystemService(PowerManager::class.java)
+        val windowManager = context.getSystemService(WindowManager::class.java)
+
+        // GPU detection via OpenGL
+        val egl = EGLContext.getEGL() as EGL10
+        // ... initialize EGL context to read GL_RENDERER and GL_VERSION
+        val glRenderer = readGlRenderer()   // e.g. "Adreno (TM) 750"
+        val glVersion  = readGlVersion()
+
+        val gpuVendor = when {
+            glRenderer.contains("Adreno", ignoreCase = true)  -> GpuVendor.ADRENO
+            glRenderer.contains("Mali",   ignoreCase = true)  -> GpuVendor.MALI
+            glRenderer.contains("PowerVR",ignoreCase = true)  -> GpuVendor.POWERVR
+            else -> GpuVendor.UNKNOWN
+        }
+
+        // CPU detection from /proc/cpuinfo and sysfs
+        val cpuInfo    = File("/proc/cpuinfo").readText()
+        val socName    = readSoCName()    // from /sys/devices/soc0/soc_id or build props
+        val coreFreqs  = readCoreMaxFreqs()
+        val pCoreMask  = detectPCoreMask(coreFreqs)
+
+        // RAM from ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memInfo)
+        val totalRamMb = (memInfo.totalMem / 1024 / 1024).toInt()
+
+        // Display
+        val displayMode = windowManager.defaultDisplay.mode
+        val refreshHz   = displayMode.refreshRate.toInt()
+
+        // Vulkan version
+        val vulkanVersion = readVulkanVersion()  // from Vulkan instance properties
+
+        return HardwareProfile(
+            cpuSoC       = socName,
+            cpuCores     = Runtime.getRuntime().availableProcessors(),
+            cpuPCoreCount = coreFreqs.count { it > 2000 },  // >2GHz = P-core
+            cpuECoreCount = coreFreqs.count { it <= 2000 },
+            cpuPCoreMask  = pCoreMask,
+            cpuMaxFreqMhz = coreFreqs.maxOrNull() ?: 0,
+            gpuVendor    = gpuVendor,
+            gpuModel     = glRenderer,
+            gpuOpenGLES  = glVersion,
+            gpuVulkanVersion  = vulkanVersion,
+            gpuDriverVersion  = glVersion,
+            supportsVulkan13  = vulkanVersion.startsWith("1.3"),
+            supportsMeshShaders = false,   // check VK extension list
+            supportsRayTracing  = false,   // almost never true on mobile
+            totalRamMb   = totalRamMb,
+            availableRamMb = (memInfo.availMem / 1024 / 1024).toInt(),
+            storageType  = detectStorageType(),
+            displayRefreshHz = refreshHz,
+            displayWidthPx   = displayMode.physicalWidth,
+            displayHeightPx  = displayMode.physicalHeight,
+            thermalHeadroom  = powerManager.getThermalHeadroom(5),
+            sustainedPerformanceSupported = powerManager.isSustainedPerformanceModeSupported
+        )
+    }
+
+    private fun detectPCoreMask(coreFreqs: List<Int>): String {
+        // Build bitmask of cores with max freq > 2000MHz (P-cores)
+        var mask = 0
+        coreFreqs.forEachIndexed { index, freq ->
+            if (freq > 2000) mask = mask or (1 shl index)
+        }
+        return "0x${mask.toString(16).uppercase()}"
+    }
+
+    private fun readCoreMaxFreqs(): List<Int> {
+        return (0..7).mapNotNull { core ->
+            try {
+                File("/sys/devices/system/cpu/cpu$core/cpufreq/cpuinfo_max_freq")
+                    .readText().trim().toIntOrNull()?.div(1000)  // kHz → MHz
+            } catch (e: Exception) { null }
+        }
+    }
+}
+```
+
+---
+
+## PART 2 — Game Configuration Engine
+
+### GameConfig.kt — the full configuration for one game on one device
+
+```kotlin
+data class GameConfig(
+    // Identity
+    val appId: Int,
+    val configVersion: Int = 1,
+
+    // Proton / Wine runtime
+    val protonVersion: ProtonVersion,   // see enum below
+    val wineRuntime: WineRuntime,
+
+    // Graphics API
+    val dxVersion: DxVersion,           // AUTO, DX9, DX10, DX11, DX12
+    val dxvkEnabled: Boolean,
+    val vkd3dEnabled: Boolean,
+    val d8vkEnabled: Boolean,
+
+    // Resolution and display
+    val resolutionScale: Float,         // 0.5 – 1.0 – 1.25
+    val fpsLimit: Int,                  // 0=uncapped, 30, 45, 60, 90, 120
+    val vsync: Boolean,
+
+    // DXVK specific
+    val dxvkAsync: Boolean,
+    val dxvkNumCompilerThreads: Int,
+    val dxvkDeviceLocalMemoryMiB: Int,  // calculated from hardware RAM
+    val dxvkPresentMode: String,        // "MAILBOX", "FIFO", "FIFO_RELAXED"
+
+    // VKD3D specific
+    val vkd3dWorkerThreads: Int,
+    val vkd3dShaderModel: String,       // "6_5", "6_4", "6_3"
+
+    // Wine
+    val esyncEnabled: Boolean,
+    val fsyncEnabled: Boolean,
+    val wineDebug: Boolean,             // always false in release
+
+    // Box64
+    val box64BigBlock: Boolean,
+    val box64StrongMem: Boolean,
+    val box64DynarecFastRound: Boolean,
+
+    // CPU
+    val cpuAffinityMask: String,        // from hardware profile P-core mask
+
+    // Extra launch args (for known game-specific fixes)
+    val extraEnvVars: Map<String, String>,
+    val wineLaunchArgs: String,
+
+    // Metadata
+    val preset: ConfigPreset,           // RECOMMENDED, PERFORMANCE, QUALITY, COMPATIBILITY
+    val notes: String                   // shown to user explaining why these settings
+)
+
+enum class ProtonVersion {
+    PROTON_10_0,
+    PROTON_9_0,
+    PROTON_8_0,
+    PROTON_7_0,
+    WINE_GE_LATEST,
+    STOCK_WINE
+}
+
+enum class ConfigPreset { RECOMMENDED, PERFORMANCE, QUALITY, COMPATIBILITY, CUSTOM }
+```
+
+---
+
+## PART 3 — Recommended Settings Engine
+
+### GameConfigRecommender.kt
+
+This class takes the hardware profile + appId and returns the best config.
+It uses a tiered decision tree — specific game overrides first, then
+hardware-based defaults.
+
+```kotlin
+object GameConfigRecommender {
+
+    fun recommend(
+        appId: Int,
+        gameName: String,
+        hardware: HardwareProfile,
+        protonTier: ProtonTier
+    ): GameConfig {
+
+        // Step 1: Check known game-specific overrides first
+        // These override EVERYTHING — they exist because the game is known
+        // to crash or behave badly without them
+        val knownFix = KnownGameFixes.get(appId)
+
+        // Step 2: Determine Proton version
+        val protonVersion = knownFix?.protonVersion
+            ?: when (protonTier) {
+                ProtonTier.PLATINUM -> ProtonVersion.PROTON_10_0  // works on latest
+                ProtonTier.GOLD     -> ProtonVersion.PROTON_9_0   // safer on 9.0
+                ProtonTier.SILVER   -> ProtonVersion.PROTON_8_0   // use stable 8.0
+                ProtonTier.BRONZE   -> ProtonVersion.PROTON_8_0   // stick to 8.0
+                ProtonTier.BORKED   -> ProtonVersion.WINE_GE_LATEST // try Wine-GE
+                else                -> ProtonVersion.PROTON_9_0   // safe default
+            }
+
+        // Step 3: Determine DX version from ProtonDB data or game name heuristics
+        val dxVersion = knownFix?.dxVersion ?: DxVersion.AUTO
+
+        // Step 4: Resolution scale based on RAM and GPU tier
+        val resolutionScale = when {
+            hardware.totalRamMb >= 12000 && isHighEndAdreno(hardware) -> 1.0f
+            hardware.totalRamMb >= 8000  && isHighEndAdreno(hardware) -> 1.0f
+            hardware.totalRamMb >= 8000                               -> 0.85f
+            hardware.totalRamMb >= 6000                               -> 0.75f
+            else                                                       -> 0.65f
+        }
+
+        // Step 5: FPS limit based on display and thermals
+        val fpsLimit = when {
+            hardware.thermalHeadroom < 0.3f   -> 30   // device already hot
+            hardware.displayRefreshHz >= 120  -> 60   // cap at 60 even on 120Hz
+            else                               -> 60
+        }
+
+        // Step 6: DXVK memory budget — 40% of RAM
+        val dxvkMemMiB = (hardware.totalRamMb * 0.40).toInt()
+            .coerceIn(1024, 6144)
+
+        // Step 7: Compiler threads — P-cores minus 1 for render thread
+        val compilerThreads = (hardware.cpuPCoreCount - 1).coerceAtLeast(2)
+
+        // Step 8: VKD3D shader model based on Turnip support
+        val shaderModel = when {
+            hardware.gpuVendor == GpuVendor.ADRENO &&
+            hardware.supportsVulkan13 -> "6_5"
+            hardware.gpuVendor == GpuVendor.ADRENO -> "6_3"
+            else -> "6_3"
+        }
+
+        return GameConfig(
+            appId = appId,
+            protonVersion = knownFix?.protonVersion ?: protonVersion,
+            wineRuntime = if (protonTier == ProtonTier.BORKED)
+                WineRuntime.WINE_GE else WineRuntime.STOCK,
+            dxVersion = knownFix?.dxVersion ?: dxVersion,
+            dxvkEnabled = dxVersion != DxVersion.DX12,
+            vkd3dEnabled = dxVersion == DxVersion.DX12,
+            d8vkEnabled = knownFix?.requiresD8VK ?: false,
+            resolutionScale = knownFix?.resolutionScale ?: resolutionScale,
+            fpsLimit = knownFix?.fpsLimit ?: fpsLimit,
+            vsync = false,
+            dxvkAsync = true,
+            dxvkNumCompilerThreads = compilerThreads,
+            dxvkDeviceLocalMemoryMiB = dxvkMemMiB,
+            dxvkPresentMode = "MAILBOX",
+            vkd3dWorkerThreads = (hardware.cpuPCoreCount / 2).coerceAtLeast(2),
+            vkd3dShaderModel = shaderModel,
+            esyncEnabled = true,
+            fsyncEnabled = true,
+            wineDebug = false,
+            box64BigBlock = true,
+            box64StrongMem = true,
+            box64DynarecFastRound = true,
+            cpuAffinityMask = hardware.cpuPCoreMask,
+            extraEnvVars = knownFix?.extraEnvVars ?: emptyMap(),
+            wineLaunchArgs = knownFix?.launchArgs ?: "",
+            preset = ConfigPreset.RECOMMENDED,
+            notes = buildRecommendationNotes(hardware, protonVersion, protonTier)
+        )
+    }
+
+    private fun isHighEndAdreno(hw: HardwareProfile): Boolean {
+        // Adreno 730, 740, 750 = high end
+        return hw.gpuModel.contains(Regex("Adreno.*(7[3-9][0-9])"))
+    }
+
+    private fun buildRecommendationNotes(
+        hw: HardwareProfile,
+        proton: ProtonVersion,
+        tier: ProtonTier
+    ): String = buildString {
+        append("Recommended for ${hw.cpuSoC} with ${hw.gpuModel}. ")
+        append("${proton.displayName} selected based on ProtonDB ${tier.name} rating. ")
+        append("Resolution scale and memory budget optimized for ${hw.totalRamMb}MB RAM.")
+    }
+}
+```
+
+### KnownGameFixes.kt — hardcoded fixes for specific games
+
+```kotlin
+object KnownGameFixes {
+
+    data class GameFix(
+        val appId: Int,
+        val gameName: String,
+        val protonVersion: ProtonVersion? = null,
+        val dxVersion: DxVersion? = null,
+        val requiresD8VK: Boolean = false,
+        val resolutionScale: Float? = null,
+        val fpsLimit: Int? = null,
+        val extraEnvVars: Map<String, String> = emptyMap(),
+        val launchArgs: String = "",
+        val reason: String = ""   // shown to user
+    )
+
+    private val fixes = mapOf(
+        // Elden Ring
+        1245620 to GameFix(
+            appId = 1245620, gameName = "Elden Ring",
+            protonVersion = ProtonVersion.PROTON_9_0,
+            dxVersion = DxVersion.DX12,
+            extraEnvVars = mapOf(
+                "PROTON_ENABLE_NVAPI" to "0",
+                "VKD3D_CONFIG" to "pipeline_library_app_cache,no_upload_hvv,force_static_cbv"
+            ),
+            reason = "Proton 9.0 more stable than 10.0 for DX12 on Adreno"
+        ),
+        // GTA V
+        271590 to GameFix(
+            appId = 271590, gameName = "GTA V",
+            protonVersion = ProtonVersion.PROTON_8_0,
+            dxVersion = DxVersion.DX11,
+            extraEnvVars = mapOf(
+                "DXVK_ASYNC" to "1",
+                "PROTON_NO_ESYNC" to "0"
+            ),
+            reason = "DX11 mode more stable than DX12 on Adreno, Proton 8.0 recommended"
+        ),
+        // Cyberpunk 2077
+        1091500 to GameFix(
+            appId = 1091500, gameName = "Cyberpunk 2077",
+            protonVersion = ProtonVersion.PROTON_9_0,
+            dxVersion = DxVersion.DX12,
+            resolutionScale = 0.75f,
+            extraEnvVars = mapOf(
+                "VKD3D_CONFIG" to "pipeline_library_app_cache,no_upload_hvv,force_static_cbv",
+                "PROTON_HIDE_NVIDIA_GPU" to "0",
+                "VKD3D_SHADER_MODEL" to "6_5"
+            ),
+            reason = "Cyberpunk requires DX12, 0.75x scale recommended for stable FPS on mobile"
+        ),
+        // Red Dead Redemption 2
+        1174180 to GameFix(
+            appId = 1174180, gameName = "Red Dead Redemption 2",
+            protonVersion = ProtonVersion.PROTON_8_0,
+            dxVersion = DxVersion.DX11,
+            resolutionScale = 0.75f,
+            extraEnvVars = mapOf(
+                "DXVK_ASYNC" to "1",
+                "WINEDLLOVERRIDES" to "vulkan-1=n;winevulkan=n"
+            ),
+            reason = "DX11 performs better than Vulkan native on Adreno for RDR2"
+        ),
+        // The Witcher 3
+        292030 to GameFix(
+            appId = 292030, gameName = "The Witcher 3",
+            protonVersion = ProtonVersion.PROTON_9_0,
+            dxVersion = DxVersion.DX11,
+            extraEnvVars = mapOf("DXVK_ASYNC" to "1"),
+            reason = "DX11 most compatible version for Witcher 3 on Wine"
+        ),
+        // Counter-Strike 2
+        730 to GameFix(
+            appId = 730, gameName = "CS2",
+            protonVersion = ProtonVersion.PROTON_10_0,
+            dxVersion = DxVersion.DX11,
+            extraEnvVars = mapOf(
+                "PROTON_ENABLE_NVAPI" to "0",
+                "DXVK_FRAME_RATE" to "60"
+            ),
+            reason = "CS2 works well on Proton 10.0 with DX11"
+        )
+    )
+
+    fun get(appId: Int): GameFix? = fixes[appId]
+}
+```
+
+---
+
+## PART 4 — Game Configuration Screen (UI)
+
+### GameConfigScreen.kt
+
+This is a full screen (not a bottom sheet) accessible from the game
+long-press menu as "Configuration" alongside the existing "Game Settings".
+
+```
+┌─────────────────────────────────────────────────────┐
+│  ← Game Configuration        [Reset to Recommended] │
+├─────────────────────────────────────────────────────┤
+│  HARDWARE SUMMARY CARD                              │
+│  Snapdragon 8 Gen 3 · Adreno 750 · 12GB RAM        │
+│  ProtonDB: GOLD badge                               │
+├─────────────────────────────────────────────────────┤
+│  PRESET CHIPS                                       │
+│  [Recommended ✓] [Performance] [Quality] [Compat]  │
+├─────────────────────────────────────────────────────┤
+│  RECOMMENDATION NOTE                                │
+│  "Proton 9.0 selected based on Gold rating..."      │
+├─────────────────────────────────────────────────────┤
+│  ── RUNTIME ──────────────────────────────────────  │
+│  Proton Version  [9.0 ▼]                           │
+│  Wine Runtime    [Stock Wine] [Wine-GE]             │
+├─────────────────────────────────────────────────────┤
+│  ── GRAPHICS ─────────────────────────────────────  │
+│  DirectX Version [AUTO ▼]                           │
+│  Resolution      [75% ◄────●──── 100%]             │
+│  FPS Limit       [30] [45] [60✓] [90] [120] [OFF]  │
+│  VSync           [OFF ●]                           │
+├─────────────────────────────────────────────────────┤
+│  ── DXVK ──────────────────────────────────────────│
+│  Async Shaders   [ON ●]                            │
+│  Compiler Threads [────●──── 6 ]                   │
+│  VRAM Budget     [────●──── 4800 MB]               │
+│  Present Mode    [MAILBOX ▼]                        │
+├─────────────────────────────────────────────────────┤
+│  ── VKD3D ─────────────────────────────────────────│
+│  Worker Threads  [────●──── 4]                     │
+│  Shader Model    [6.5 ▼]                           │
+├─────────────────────────────────────────────────────┤
+│  ── WINE ──────────────────────────────────────────│
+│  ESYNC           [ON ●]                            │
+│  FSYNC           [ON ●]                            │
+│  Launch Args     [__________________________]       │
+│  Extra Env Vars  [__________________________]       │
+├─────────────────────────────────────────────────────┤
+│  [▶  LAUNCH WITH THESE SETTINGS]                   │
+└─────────────────────────────────────────────────────┘
+```
+
+### Preset and Custom behavior (c5)
+
+- **Preset chips must update all visible fields in real time.** When the user taps a preset (Recommended, Performance, Quality, Compatibility), call `ConfigPresets.apply(currentConfig, preset, hardware)` and push the result through the ViewModel's StateFlow so every UI field (resolution, FPS, Proton version, DXVK toggles, etc.) updates immediately. This teaches users what each preset does; if fields don't visibly change, presets feel like a black box.
+
+- **Every individual setting change must set preset to Custom.** When the user changes any single control (Proton version, resolution slider, FPS, VSync, DXVK async, compiler threads, launch args, etc.), always call `viewModel.update(config.copy(..., preset = ConfigPreset.CUSTOM))`. Apply this consistently on every control — if even one update omits `preset = ConfigPreset.CUSTOM`, the chip can stay on a preset label while the config no longer matches that preset.
+
+- **Spot-check after c5 (full preset/custom contract):**
+  1. Search `config.copy(` — every result must include `preset = ConfigPreset.CUSTOM`. Easy to get right on the first few controls and forget on the last few.
+  2. Check `applyPreset()` in the ViewModel — it must call `ConfigPresets.apply(currentConfig, preset, hardware)` and emit the full result through the StateFlow, not just `config.copy(preset = it)`. Otherwise the preset chip shows e.g. "Performance" but resolution and FPS never change.
+  Both checks take under a minute; if both pass, the preset system is correct end to end.
+
+### Implementation
+
+```kotlin
+@Composable
+fun GameConfigScreen(
+    appId: Int,
+    gameName: String,
+    onLaunch: (GameConfig) -> Unit,
+    onNavigateBack: () -> Unit,
+    viewModel: GameConfigViewModel = hiltViewModel()
+) {
+    val hardware by viewModel.hardware.collectAsState()
+    val config by viewModel.config.collectAsState()
+    val protonTier by viewModel.protonTier.collectAsState()
+
+    LaunchedEffect(appId) {
+        viewModel.load(appId, gameName)
+    }
+
+    Scaffold(
+        containerColor = gnBgDeepest,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        "Game Configuration",
+                        style = PluviaTypography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = gnTextPrimary
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = null, tint = gnTextPrimary)
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { viewModel.resetToRecommended() }) {
+                        Text("Reset", color = gnAccentPrimary, style = PluviaTypography.labelLarge)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = gnBgDeepest)
+            )
+        },
+        bottomBar = {
+            // Launch button pinned to bottom
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(gnBgDeepest)
+                    .padding(16.dp)
+                    .navigationBarsPadding()
+            ) {
+                Button(
+                    onClick = { onLaunch(config) },
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = gnAccentPrimary),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.SportsEsports, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Launch with These Settings",
+                        style = PluviaTypography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(vertical = 12.dp)
+        ) {
+
+            // Hardware summary card
+            item {
+                HardwareSummaryCard(hardware = hardware, protonTier = protonTier)
+            }
+
+            // Preset chips
+            item {
+                PresetChipRow(
+                    selected = config.preset,
+                    onSelect = { viewModel.applyPreset(it) }
+                )
+            }
+
+            // Recommendation note
+            if (config.notes.isNotBlank()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = gnBgSurface),
+                        border = BorderStroke(1.dp, gnAccentPrimary.copy(alpha = 0.25f)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.AutoFixHigh,
+                                contentDescription = null,
+                                tint = gnAccentGlow,
+                                modifier = Modifier.size(16.dp).padding(top = 2.dp)
+                            )
+                            Text(
+                                text = config.notes,
+                                style = PluviaTypography.bodySmall,
+                                color = gnTextSecondary
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Runtime section
+            item { ConfigSectionHeader("RUNTIME") }
+            item {
+                ConfigCard {
+                    ProtonVersionPicker(
+                        selected = config.protonVersion,
+                        onSelect = { viewModel.update(config.copy(protonVersion = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    WineRuntimePicker(
+                        selected = config.wineRuntime,
+                        onSelect = { viewModel.update(config.copy(wineRuntime = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                }
+            }
+
+            // Graphics section
+            item { ConfigSectionHeader("GRAPHICS") }
+            item {
+                ConfigCard {
+                    DxVersionPicker(
+                        selected = config.dxVersion,
+                        onSelect = { viewModel.update(config.copy(dxVersion = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    ResolutionScaleSlider(
+                        value = config.resolutionScale,
+                        onChange = { viewModel.update(config.copy(resolutionScale = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    FpsLimitPicker(
+                        selected = config.fpsLimit,
+                        onSelect = { viewModel.update(config.copy(fpsLimit = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    ConfigToggleRow(
+                        label = "VSync",
+                        description = "Eliminates tearing but increases input latency",
+                        checked = config.vsync,
+                        onToggle = { viewModel.update(config.copy(vsync = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                }
+            }
+
+            // DXVK section
+            item { ConfigSectionHeader("DXVK") }
+            item {
+                ConfigCard {
+                    ConfigToggleRow(
+                        label = "Async Shader Compilation",
+                        description = "Compiles shaders in background — eliminates render thread freeze",
+                        checked = config.dxvkAsync,
+                        onToggle = { viewModel.update(config.copy(dxvkAsync = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    ConfigSliderRow(
+                        label = "Compiler Threads",
+                        description = "Background threads for shader compilation. Recommended: P-cores minus 1",
+                        value = config.dxvkNumCompilerThreads.toFloat(),
+                        range = 1f..8f,
+                        steps = 6,
+                        valueLabel = "${config.dxvkNumCompilerThreads}",
+                        onChange = { viewModel.update(config.copy(dxvkNumCompilerThreads = it.toInt(), preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    ConfigSliderRow(
+                        label = "VRAM Budget",
+                        description = "How much RAM DXVK uses for GPU resources. ~40% of total RAM is optimal.",
+                        value = config.dxvkDeviceLocalMemoryMiB.toFloat(),
+                        range = 1024f..6144f,
+                        steps = 0,
+                        valueLabel = "${config.dxvkDeviceLocalMemoryMiB} MB",
+                        onChange = { viewModel.update(config.copy(dxvkDeviceLocalMemoryMiB = it.toInt(), preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    PresentModePicker(
+                        selected = config.dxvkPresentMode,
+                        onSelect = { viewModel.update(config.copy(dxvkPresentMode = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                }
+            }
+
+            // VKD3D section (only shown if DX12 selected)
+            if (config.dxVersion == DxVersion.DX12 || config.dxVersion == DxVersion.AUTO) {
+                item { ConfigSectionHeader("VKD3D (DirectX 12)") }
+                item {
+                    ConfigCard {
+                        ConfigSliderRow(
+                            label = "Worker Threads",
+                            description = "Async DX12 pipeline compilation threads",
+                            value = config.vkd3dWorkerThreads.toFloat(),
+                            range = 1f..8f,
+                            steps = 6,
+                            valueLabel = "${config.vkd3dWorkerThreads}",
+                            onChange = { viewModel.update(config.copy(vkd3dWorkerThreads = it.toInt(), preset = ConfigPreset.CUSTOM)) }
+                        )
+                        ConfigDivider()
+                        ShaderModelPicker(
+                            selected = config.vkd3dShaderModel,
+                            onSelect = { viewModel.update(config.copy(vkd3dShaderModel = it, preset = ConfigPreset.CUSTOM)) }
+                        )
+                    }
+                }
+            }
+
+            // Wine section
+            item { ConfigSectionHeader("WINE") }
+            item {
+                ConfigCard {
+                    ConfigToggleRow(
+                        label = "ESYNC",
+                        description = "Eventfd sync — greatly reduces CPU usage in multithreaded games",
+                        checked = config.esyncEnabled,
+                        onToggle = { viewModel.update(config.copy(esyncEnabled = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    ConfigToggleRow(
+                        label = "FSYNC",
+                        description = "Futex2 sync — faster than ESYNC on kernel 5.16+",
+                        checked = config.fsyncEnabled,
+                        onToggle = { viewModel.update(config.copy(fsyncEnabled = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                    ConfigDivider()
+                    ConfigTextFieldRow(
+                        label = "Launch Arguments",
+                        placeholder = "e.g. -dx11 -windowed",
+                        value = config.wineLaunchArgs,
+                        onChange = { viewModel.update(config.copy(wineLaunchArgs = it, preset = ConfigPreset.CUSTOM)) }
+                    )
+                }
+            }
+
+            item { Spacer(Modifier.height(8.dp)) }
+        }
+    }
+}
+```
+
+### HardwareSummaryCard composable
+
+```kotlin
+@Composable
+fun HardwareSummaryCard(hardware: HardwareProfile, protonTier: ProtonTier) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = gnBgSurface),
+        border = BorderStroke(1.dp, gnBorderCard),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // CPU/GPU chip icon
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .background(gnBgElevated, RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Memory, contentDescription = null, tint = gnAccentGlow, modifier = Modifier.size(22.dp))
+            }
+
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = hardware.cpuSoC,
+                    style = PluviaTypography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = gnTextPrimary
+                )
+                Text(
+                    text = "${hardware.gpuModel} · ${hardware.totalRamMb / 1024}GB RAM",
+                    style = PluviaTypography.bodySmall,
+                    color = gnTextSecondary
+                )
+                Text(
+                    text = "Vulkan ${hardware.gpuVulkanVersion} · ${hardware.displayRefreshHz}Hz display",
+                    style = PluviaTypography.labelSmall,
+                    color = gnTextTertiary
+                )
+            }
+
+            ProtonBadge(tier = protonTier)
+        }
+    }
+}
+```
+
+---
+
+## PART 5 — Applying Config at Launch
+
+### Merge order (CRITICAL)
+
+The final env var application order **must** be:
+
+1. **Base container env** (existing container/default env)
+2. **DXVKHelper base config** (if present)
+3. **GameConfig settings from recommender** (Proton path, DXVK/VKD3D, sync, Box64, FPS, etc.)
+4. **KnownGameFixes `extraEnvVars` last** — these **must win** over everything.
+
+If KnownGameFixes.extraEnvVars is not applied last, game-specific overrides (e.g. Elden Ring’s `PROTON_ENABLE_NVAPI=0`) can be overwritten by base config and the fix silently stops working. When wiring c4, apply GameConfig to env, then apply `config.extraEnvVars` after all other env setup.
+
+- **extraEnvVars must use put, not putIfAbsent.** KnownGameFixes overrides must win unconditionally. Any conditional merge (e.g. putIfAbsent) breaks override behavior for keys already set by an earlier step.
+
+- **GameConfig load order:** Load from GameProfileStore (or equivalent saved config) first. If a saved config exists for that appId, use it. If none, run the recommender and use its output as the default; optionally persist that so the next launch has a saved config. Flow: saved profile exists → use it; no saved profile → run recommender → use that → optionally save. This gives new users recommended settings automatically and does not overwrite custom settings on every launch.
+
+- **runBlocking on launch path:** Resolving GameConfig (saved or recommender) may use `runBlocking` in the launch flow. This is acceptable only because `HardwareProfileCache.getProfile()` returns the cached profile quickly when the cache is valid (version + driver key match); slow detection runs only on first run or after app/driver change. If the cache were not guaranteed warm at launch time, switch to a coroutine-safe approach (e.g. resolve config before entering the launch executor, or prewarm cache on app/settings open) before production.
+
+### In LaunchOrchestrator.kt
+
+Replace the current `applyIsolationEnv` with a new overload that accepts
+a full `GameConfig`:
+
+```kotlin
+fun applyGameConfig(context: Context, config: GameConfig, envVars: EnvVars) {
+
+    // ── Proton version ──────────────────────────────────────────────────
+    val protonPath = ProtonManager.getProtonPath(context, config.protonVersion)
+    envVars.put("STEAM_COMPAT_DATA_PATH", GamePaths.getCompatDataPath(context, config.appId))
+    envVars.put("STEAM_COMPAT_CLIENT_INSTALL_PATH", protonPath)
+    envVars.put("PROTON_PATH", protonPath)
+
+    // ── DXVK ────────────────────────────────────────────────────────────
+    envVars.put("DXVK_ASYNC", if (config.dxvkAsync) "1" else "0")
+    envVars.put("DXVK_CONFIG_FILE", GamePaths.getDxvkConfigPath(context, config.appId))
+    writeDxvkConfig(context, config)  // writes dxvk.conf for this game
+
+    // ── VKD3D ────────────────────────────────────────────────────────────
+    if (config.vkd3dEnabled) {
+        val vkd3dConfig = buildString {
+            append("pipeline_library_app_cache,no_upload_hvv,force_static_cbv")
+        }
+        envVars.put("VKD3D_CONFIG", vkd3dConfig)
+        envVars.put("VKD3D_WORKER_THREAD_COUNT", config.vkd3dWorkerThreads.toString())
+        envVars.put("VKD3D_SHADER_MODEL", config.vkd3dShaderModel)
+        envVars.put("VKD3D_DISABLE_EXTENSIONS",
+            "VK_KHR_ray_tracing_pipeline,VK_KHR_ray_query")
+        envVars.put("VKD3D_DEBUG", "none")
+    }
+
+    // ── Wine sync ────────────────────────────────────────────────────────
+    envVars.put("WINEESYNC", if (config.esyncEnabled) "1" else "0")
+    envVars.put("WINEFSYNC", if (config.fsyncEnabled) "1" else "0")
+    envVars.put("WINEDEBUG", if (config.wineDebug) "" else "-all")
+
+    // ── Box64 ────────────────────────────────────────────────────────────
+    envVars.put("BOX64_DYNAREC_BIGBLOCK",    if (config.box64BigBlock)       "1" else "0")
+    envVars.put("BOX64_DYNAREC_STRONGMEM",   if (config.box64StrongMem)      "1" else "0")
+    envVars.put("BOX64_DYNAREC_FASTROUND",   if (config.box64DynarecFastRound) "1" else "0")
+    envVars.put("BOX64_DYNAREC_ALIGNED_ATOMICS", "1")
+    envVars.put("BOX64_LOG", "0")
+
+    // ── FPS cap ──────────────────────────────────────────────────────────
+    if (config.fpsLimit > 0) {
+        envVars.put("DXVK_FRAME_RATE", config.fpsLimit.toString())
+    }
+
+    // ── Extra game-specific env vars ─────────────────────────────────────
+    // These come from KnownGameFixes and override everything above
+    config.extraEnvVars.forEach { (key, value) ->
+        envVars.put(key, value)
+    }
+}
+
+private fun writeDxvkConfig(context: Context, config: GameConfig) {
+    val configText = buildString {
+        appendLine("dxvk.enableAsync = ${if (config.dxvkAsync) "True" else "False"}")
+        appendLine("dxvk.numCompilerThreads = ${config.dxvkNumCompilerThreads}")
+        appendLine("dxvk.enableGraphicsPipelineLibrary = True")
+        appendLine("dxvk.enableStateCache = True")
+        appendLine("dxvk.stateCacheMaxSize = 256")
+        appendLine("dxvk.deviceLocalMemoryMiB = ${config.dxvkDeviceLocalMemoryMiB}")
+        appendLine("dxvk.maxFrameLatency = 1")
+        appendLine("dxvk.presentMode = ${config.dxvkPresentMode}")
+        appendLine("dxvk.trackPipelineLifetime = 0")
+        appendLine("DXVK_HUD = none")
+        appendLine("dxvk.logLevel = none")
+    }
+    val configFile = File(GamePaths.getDxvkConfigPath(context, config.appId))
+    configFile.parentFile?.mkdirs()
+    configFile.writeText(configText)
+}
+```
+
+---
+
+## PART 6 — Preset Definitions
+
+```kotlin
+object ConfigPresets {
+    fun apply(base: GameConfig, preset: ConfigPreset, hardware: HardwareProfile): GameConfig {
+        return when (preset) {
+
+            ConfigPreset.PERFORMANCE -> base.copy(
+                resolutionScale = (base.resolutionScale - 0.15f).coerceAtLeast(0.5f),
+                fpsLimit = hardware.displayRefreshHz.coerceAtMost(60),
+                dxvkAsync = true,
+                vsync = false,
+                preset = ConfigPreset.PERFORMANCE,
+                notes = "Lower resolution scale for higher FPS. Best for fast-paced games."
+            )
+
+            ConfigPreset.QUALITY -> base.copy(
+                resolutionScale = 1.0f,
+                fpsLimit = 30,
+                vsync = true,
+                preset = ConfigPreset.QUALITY,
+                notes = "Native resolution with frame cap for visual quality. Best for story games."
+            )
+
+            ConfigPreset.COMPATIBILITY -> base.copy(
+                protonVersion = ProtonVersion.PROTON_8_0,
+                dxVersion = DxVersion.DX11,
+                vkd3dEnabled = false,
+                dxvkEnabled = true,
+                resolutionScale = 0.75f,
+                fpsLimit = 30,
+                esyncEnabled = true,
+                fsyncEnabled = false,
+                box64BigBlock = false,
+                box64StrongMem = true,
+                preset = ConfigPreset.COMPATIBILITY,
+                notes = "Maximum compatibility mode. Use if game crashes with other presets. Forces DX11 and Proton 8.0."
+            )
+
+            else -> base  // RECOMMENDED and CUSTOM return unchanged
+        }
+    }
+}
+```
+
+---
+
+## PART 7 — Navigation wiring
+
+Add "Configuration" to the game long-press context menu in `BaseAppScreen.kt`
+or wherever the existing "Game Settings" option lives:
+
+```kotlin
+// Add alongside existing GameSettings menu item:
+AppOptionMenuType.GameConfig("Configuration")
+
+// Navigate on tap:
+AppOptionMenuType.GameConfig -> {
+    navController.navigate("gameConfig/${appInfo.appId}?name=${appInfo.name}")
+}
+
+// Nav graph:
+composable(
+    "gameConfig/{appId}",
+    arguments = listOf(navArgument("appId") { type = NavType.IntType })
+) { entry ->
+    GameConfigScreen(
+        appId = entry.arguments!!.getInt("appId"),
+        gameName = entry.arguments?.getString("name") ?: "",
+        onLaunch = { config ->
+            viewModel.launchWithConfig(config)
+            navController.popBackStack()
+        },
+        onNavigateBack = { navController.popBackStack() }
+    )
+}
+```
+
+---
+
+## DESIGN CONSTRAINTS
+
+- All screens: gnBgDeepest background, gnBgSurface cards, gnBorderCard 1dp stroke, no elevation
+- Fonts: GameNativeFontFamily (Outfit) via PluviaTypography everywhere
+- No new colors — only existing gn_* tokens
+- Section headers: 11sp gnTextTertiary uppercase letterSpacing=0.10
+- Sliders: use Material3 Slider with gnAccentPrimary thumb and track
+- Toggles: use Material3 Switch with gnAccentPrimary checked color
+- Preset chips: same FilterChip style as LibraryListPane sort chips
+- Config cards: group related settings inside a single Card (gnBgSurface)
+  with Dividers between rows — don't make every setting its own card
+- All hardware reads on Dispatchers.IO, never on main thread
+- Cache HardwareProfile in DataStore — only re-detect on first run or app update
+- KnownGameFixes is a hardcoded in-app database that ships with the app
+  AND can be updated via a remote JSON endpoint for new game fixes
+  without requiring an app update

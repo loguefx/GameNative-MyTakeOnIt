@@ -919,4 +919,15 @@ object PrefManager {
         set(value) {
             setPref(GAME_COMPATIBILITY_CACHE, value)
         }
+
+    // Hardware profile cache — invalidated on app update or when Turnip/Mesa (graphics driver) is installed or switched
+    private val HARDWARE_PROFILE_CACHE_VERSION = stringPreferencesKey("hardware_profile_cache_version")
+    var hardwareProfileCacheVersion: String
+        get() = getPref(HARDWARE_PROFILE_CACHE_VERSION, "")
+        set(value) = setPref(HARDWARE_PROFILE_CACHE_VERSION, value)
+
+    private val HARDWARE_PROFILE_JSON = stringPreferencesKey("hardware_profile_json")
+    var hardwareProfileJson: String
+        get() = getPref(HARDWARE_PROFILE_JSON, "")
+        set(value) = setPref(HARDWARE_PROFILE_JSON, value)
 }

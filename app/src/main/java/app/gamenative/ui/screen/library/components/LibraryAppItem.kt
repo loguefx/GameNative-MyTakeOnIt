@@ -83,6 +83,8 @@ import app.gamenative.ui.theme.gnStatusDownloading
 import app.gamenative.ui.theme.gnStatusInstalled
 import app.gamenative.ui.theme.gnTextPrimary
 import app.gamenative.ui.util.ListItemImage
+import app.gamenative.ui.component.ProtonBadge
+import app.gamenative.proton.ProtonTier
 import com.skydoves.landscapist.ImageOptions
 import com.skydoves.landscapist.coil.CoilImage
 import app.gamenative.utils.CustomGameScanner
@@ -236,6 +238,7 @@ internal fun AppItem(
                 imageRefreshCounter = imageRefreshCounter,
                 compatibilityStatus = compatibilityStatus,
                 isRefreshing = isRefreshing,
+                protonTier = ProtonTier.UNKNOWN,
             )
         }
     }
@@ -246,6 +249,7 @@ private fun GridCardContent(
     imageRefreshCounter: Long,
     compatibilityStatus: GameCompatibilityStatus?,
     isRefreshing: Boolean,
+    protonTier: ProtonTier = ProtonTier.UNKNOWN,
 ) {
     fun findCapsuleUrl(): String {
         if (appInfo.gameSource == GameSource.CUSTOM_GAME) {
@@ -325,6 +329,12 @@ private fun GridCardContent(
                 tint = Color.White.copy(alpha = 0.3f),
             )
         }
+        ProtonBadge(
+            tier = protonTier,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(6.dp),
+        )
         Box(
             modifier = Modifier
                 .align(Alignment.BottomStart)

@@ -1,0 +1,639 @@
+---
+description: Advanced Steam game performance improvements — CPU affinity, ZRAM, audio latency, Wine-GE runtime, ProtonDB integration, D8VK, input polling, huge pages, shader pre-warming, and VKD3D descriptor heap tuning. Apply when editing launch, container, DXVKHelper, GuestProgramLauncher, LibraryAppItem, or game settings files.
+globs: ["**/keyvalues/**", "**/*Launch*", "**/*Container*", "**/*DXVK*", "**/*Box64*", "**/*GuestProgram*", "**/*LibraryApp*", "**/*GameSettings*", "**/*XServer*"]
+alwaysApply: false
+---
+
+# GameNative — Advanced Game Performance Improvements
+
+Implement all 10 tasks below in order. Each task is self-contained.
+Read the full task before writing any code — the "Why" section explains
+the root cause so you don't accidentally remove or weaken the fix.
+All tasks must follow existing code patterns in the project.
+Do not introduce new dependencies unless the task explicitly requires one.
+
+## Plain terms — what each task does
+
+| Task | In plain terms |
+|------|----------------|
+| **1 — CPU Affinity** | Pins the game process to big performance cores only. Without this the Android scheduler can put the game on small efficiency cores during a scene transition and cause a ~200ms stutter that looks like a GPU hitch but is a CPU scheduling decision. |
+| **2 — Memory tuning** | Adds two sysctl values to the container init: `page-cluster=0` (kernel only decompresses the exact page needed for ZRAM) and `sched_migration_cost_ns` (game threads stay on the same core longer so cache stays warm). |
+| **3 — Audio latency** | Default PulseAudio buffer is 200ms; the game's audio thread can block that long, which stalls the render thread and causes frame drops. Dropping to 60ms and 2 fragments removes that class of stutter. |
+| **4 — Wine-GE** | Runtime picker in per-game settings. Games that crash on stock Wine can be switched to Wine-GE with hundreds of game-specific patches from Valve's Proton team. |
+| **5 — ProtonDB badges** | Colored tier badge (Platinum/Gold/Silver/Bronze/Borked) on every game card from the ProtonDB community database so users know what will work before launching. |
+| **6 — D8VK** | Covers classic DirectX 8 games (2000–2003) that otherwise use Wine's software renderer and run at single-digit FPS; D8VK translates DX8 to Vulkan. |
+| **7 — Input polling** | Requests unbuffered input from Android for touch and gamepad so events arrive immediately instead of batched at 60Hz; on 120Hz+ devices this roughly halves input latency. |
+| **8 — Huge pages** | Uses 2MB pages for Box64 JIT memory instead of 4KB, cutting TLB pressure on large open-world games where the JIT cache reaches 50–100MB. |
+| **9 — Shader pre-warming** | Starts building the DXVK shader cache right after a game finishes downloading while the device is idle, so the first play session is smooth instead of stuttery. |
+| **10 — VKD3D heap tuning** | Adds `force_static_cbv` to VKD3D config to reduce CPU cost per draw call and avoid descriptor heap reallocation spikes in large DX12 open-world titles. |
+
+---
+
+## TASK 1 — CPU Core Affinity Pinning
+
+### Why
+Snapdragon chips have asymmetric cores: small efficiency cores (E-cores)
+for background tasks and large performance cores (P-cores) for heavy work.
+The Linux scheduler can place the Wine/Box64 game process on E-cores during
+scene transitions, causing sudden FPS drops that look like GPU stutter but
+are actually CPU scheduling. Pinning the game process to P-cores only
+eliminates this entirely.
+
+### What to implement
+
+In `LaunchOrchestrator.kt` (or wherever the game process is started),
+after the Wine/Box64 process launches, start a background coroutine that:
+
+1. Waits for the Wine process to appear (poll `pgrep -f wine` inside the
+   container every 500ms, max 30 attempts)
+2. Once the PID is found, runs `taskset` inside the container to pin it
+
+```kotlin
+// In LaunchOrchestrator, after startGame() or equivalent:
+viewModelScope.launch(Dispatchers.IO) {
+    var pid: String? = null
+    repeat(30) {
+        if (pid == null) {
+            pid = ContainerUtils.runCommandOutput("pgrep -f wine | head -1")?.trim()
+            if (pid.isNullOrBlank()) {
+                delay(500)
+            }
+        }
+    }
+    pid?.let {
+        // 0xF0 = cores 4-7 (P-cores on Snapdragon 8 Gen 1/2/3)
+        // 0x70 = cores 4-6 if Gen 3 prime core should be left for the OS
+        // Use 0xF0 as the default — safe for all current flagship Snapdragon
+        ContainerUtils.runCommand("taskset -p 0xF0 $it")
+    }
+}
+```
+
+### Important notes
+- `taskset` must run INSIDE the container, not on the Android host
+- Use `ContainerUtils.runCommand` (same pattern as sysctl calls in GuestProgramLauncherComponent)
+- If `taskset` is not available in the container's Ubuntu image, install it
+  via `util-linux` package in the container setup script
+- Do not block the main thread waiting for the PID — use a coroutine
+
+---
+
+## TASK 2 — ZRAM / Memory Compression Kernel Tuning
+
+### Why
+`vm.page-cluster=0` makes the kernel read individual swap pages instead of
+clusters. For ZRAM (compressed RAM swap), clusters waste memory bandwidth
+reading pages you don't need. Setting it to 0 means only the exact page
+requested is decompressed — lower latency, lower memory bandwidth per swap hit.
+
+`kernel.sched_migration_cost_ns=5000000` makes the scheduler less eager to
+migrate tasks between CPU cores. Task migration has a cost — the migrated
+thread's cache lines are cold on the new core. Higher migration cost means
+the game thread stays on the same core longer, keeping its L1/L2 cache warm.
+
+### What to implement
+
+In `GuestProgramLauncherComponent.java`, find the existing sysctl block
+(already has vm.max_map_count, vm.swappiness, vm.dirty_*) and add
+these two lines AFTER the existing sysctl calls:
+
+```bash
+sysctl -w vm.page-cluster=0 2>/dev/null;
+sysctl -w kernel.sched_migration_cost_ns=5000000 2>/dev/null;
+```
+
+These must run inside the same `sh -c "..."` script that already runs the
+other sysctls inside the proot container. Do NOT add them to any host-side
+code path.
+
+---
+
+## TASK 3 — Audio Latency Tuning
+
+### Why
+Wine audio routes through PulseAudio inside the container. PulseAudio's
+default audio buffer is tuned for music playback (200ms+ latency) which
+is completely wrong for games. When the game's audio thread submits audio
+data, it has to wait for the oversized buffer to drain before it can submit
+more. This causes the GAME THREAD to stall, which shows up as micro-stutter
+and frame drops that look like GPU problems but are actually audio thread
+blocking. Reducing the buffer to 60ms and using only 2 fragments eliminates
+this class of stutter entirely.
+
+### What to implement
+
+**Step A — Environment variables**
+
+In `DXVKHelper.java` (or wherever Wine env vars are set), add:
+
+```java
+// Reduce PulseAudio latency from 200ms default to 60ms
+// This prevents the Wine audio thread from blocking the game thread
+envVars.put("PULSE_LATENCY_MSEC", "60");
+
+// Use native PulseAudio driver (n) with Wine builtin fallback (b)
+// This is faster than Wine's own audio abstraction layer
+// IMPORTANT: append to existing WINEDLLOVERRIDES if already set,
+// do not replace the existing value. Check if key exists first.
+val existing = envVars.getOrDefault("WINEDLLOVERRIDES", "")
+envVars.put(
+    "WINEDLLOVERRIDES",
+    if (existing.isBlank()) "winepulse.drv=n,b"
+    else "$existing;winepulse.drv=n,b"
+)
+```
+
+**Step B — PulseAudio daemon config**
+
+In the container setup code (wherever container files are initialized on
+first run), write this config to
+`{containerDataDir}/etc/pulse/daemon.conf`:
+
+```
+# GameNative audio tuning — low latency for games
+default-fragments = 2
+default-fragment-size-msec = 5
+```
+
+If `daemon.conf` already exists in the container, append these lines
+rather than replacing the file. Check for the file before writing.
+
+---
+
+## TASK 4 — Wine-GE Runtime Option
+
+### Why
+Wine-GE is a community build of Wine with hundreds of game-specific patches
+that are not in upstream Wine. Many games that crash, have broken cutscenes,
+or refuse to launch on stock Wine work perfectly on Wine-GE because Valve's
+Proton team maintains these patches specifically for Steam game compatibility.
+This gives users an escape hatch for games that don't work with stock Wine
+without requiring a full reinstall.
+
+### What to implement
+
+**Step A — Add runtime field to GameProfileOverrides**
+
+In `GameProfileOverrides.kt`, add:
+```kotlin
+val wineRuntime: WineRuntime = WineRuntime.STOCK
+
+enum class WineRuntime {
+    STOCK,   // existing Wine build already in the app
+    WINE_GE  // community Wine-GE build
+}
+```
+
+**Step B — Add to Game Settings bottom sheet**
+
+In `GameSettingsBottomSheet.kt`, add a new row after the DX version override:
+
+```kotlin
+// Wine Runtime row
+Text(
+    text = "WINE RUNTIME",
+    style = PluviaTypography.labelSmall.copy(letterSpacing = 0.10.sp),
+    color = gnTextTertiary
+)
+Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(8.dp)
+) {
+    listOf(WineRuntime.STOCK to "Stock Wine", WineRuntime.WINE_GE to "Wine-GE").forEach { (runtime, label) ->
+        FilterChip(
+            selected = selectedRuntime == runtime,
+            onClick = { selectedRuntime = runtime },
+            label = { Text(label, style = PluviaTypography.labelMedium) },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = gnAccentSubtle,
+                selectedLabelColor = gnAccentGlow,
+                containerColor = gnBgElevated,
+                labelColor = gnTextSecondary
+            ),
+            border = FilterChipDefaults.filterChipBorder(
+                enabled = true,
+                selected = selectedRuntime == runtime,
+                borderColor = gnBorderCard,
+                selectedBorderColor = gnAccentPrimary.copy(alpha = 0.4f)
+            ),
+            shape = RoundedCornerShape(20.dp)
+        )
+    }
+}
+
+// Show info text if Wine-GE selected
+if (selectedRuntime == WineRuntime.WINE_GE) {
+    Text(
+        text = "Wine-GE includes community patches for better game compatibility. Download required on first use (~150MB).",
+        style = PluviaTypography.bodySmall,
+        color = gnTextSecondary,
+        modifier = Modifier.padding(top = 4.dp)
+    )
+}
+```
+
+**Step C — Apply runtime in LaunchOrchestrator**
+
+In `LaunchOrchestrator.applyIsolationEnv()`, check the profile's
+wineRuntime and set the WINE path accordingly:
+```kotlin
+val profile = GameProfileStore.load(context, appId)
+if (profile?.wineRuntime == WineRuntime.WINE_GE) {
+    val wineGePath = GamePaths.getWineGEPath(context)
+    if (File(wineGePath).exists()) {
+        envVars.put("WINE", "$wineGePath/bin/wine")
+        envVars.put("WINESERVER", "$wineGePath/bin/wineserver")
+        envVars.put("WINELOADER", "$wineGePath/bin/wine")
+        envVars.put("WINEDLLPATH", "$wineGePath/lib/wine")
+    } else {
+        // Wine-GE not downloaded yet — fall back to stock and notify user
+        envVars.put("WINE_GE_MISSING", "1")
+    }
+}
+```
+
+**Step D — Download flow**
+
+When `WINE_GE_MISSING=1` is detected at launch time, show a one-time
+dialog: "Wine-GE is not downloaded yet. Download now? (~150MB)" with
+Download and Cancel buttons. On Download, fetch the latest Wine-GE ARM64
+release from GitHub releases and extract to `GamePaths.getWineGEPath(context)`.
+
+---
+
+## TASK 5 — ProtonDB Compatibility Badges
+
+### Why
+ProtonDB aggregates thousands of community reports about which Steam games
+work on Linux/Proton and at what quality level. Showing the ProtonDB tier
+on game cards tells users immediately which games will work great vs which
+need tweaking vs which are broken — before they waste time trying to launch
+a known-broken game.
+
+### API
+
+```
+GET https://www.protondb.com/api/v1/reports/summaries/{appId}.json
+```
+
+Returns JSON with a `tier` field: `platinum`, `gold`, `silver`, `bronze`,
+`borked`, or `pending` (not enough reports).
+
+### What to implement
+
+**Step A — ProtonDbRepository**
+
+```kotlin
+class ProtonDbRepository @Inject constructor(
+    private val httpClient: HttpClient,  // use existing HTTP client in project
+    private val gameDao: GameDao         // use existing Room DAO
+) {
+    suspend fun getTier(appId: Int): ProtonTier {
+        // Check Room cache first — refresh if older than 7 days
+        val cached = gameDao.getProtonTier(appId)
+        if (cached != null && !cached.isStale()) return cached.tier
+
+        return try {
+            val response = httpClient.get(
+                "https://www.protondb.com/api/v1/reports/summaries/$appId.json"
+            )
+            val tier = parseProtonTier(response.body<JsonObject>()["tier"]?.jsonPrimitive?.content)
+            gameDao.saveProtonTier(appId, tier, System.currentTimeMillis())
+            tier
+        } catch (e: Exception) {
+            cached?.tier ?: ProtonTier.UNKNOWN
+        }
+    }
+}
+
+enum class ProtonTier { PLATINUM, GOLD, SILVER, BRONZE, BORKED, PENDING, UNKNOWN }
+```
+
+**Step B — ProtonDB badge composable**
+
+```kotlin
+@Composable
+fun ProtonBadge(tier: ProtonTier, modifier: Modifier = Modifier) {
+    if (tier == ProtonTier.UNKNOWN || tier == ProtonTier.PENDING) return
+
+    val (label, color) = when (tier) {
+        ProtonTier.PLATINUM -> "PLATINUM" to gnNeonTeal
+        ProtonTier.GOLD     -> "GOLD"     to gnNeonOrange
+        ProtonTier.SILVER   -> "SILVER"   to gnTextSecondary
+        ProtonTier.BRONZE   -> "BRONZE"   to gnNeonOrange.copy(alpha = 0.6f)
+        ProtonTier.BORKED   -> "BORKED"   to gnStatusError
+        else -> return
+    }
+
+    Box(
+        modifier = modifier
+            .background(color.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+            .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 5.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = label,
+            style = PluviaTypography.labelSmall.copy(
+                fontSize = 9.sp,
+                letterSpacing = 0.08.sp,
+                fontWeight = FontWeight.Bold
+            ),
+            color = color
+        )
+    }
+}
+```
+
+**Step C — Show badge on game cards**
+
+In `LibraryAppItem.kt` inside `GridCardContent`, add the badge overlaid
+on the top-left of the cover art (above the scrim):
+
+```kotlin
+// Top-left corner of cover art, inside the Box
+ProtonBadge(
+    tier = protonTier,
+    modifier = Modifier
+        .align(Alignment.TopStart)
+        .padding(6.dp)
+)
+```
+
+Also show it in `GameSettingsBottomSheet.kt` near the game title.
+
+**Step D — Fetch on library load**
+
+In `LibraryViewModel` (or equivalent), when the game list loads, launch
+background fetches for ProtonDB tiers:
+```kotlin
+games.forEach { game ->
+    launch(Dispatchers.IO) {
+        val tier = protonDbRepository.getTier(game.appId)
+        _protonTiers.update { it + (game.appId to tier) }
+    }
+}
+```
+Use a rate limiter — add a 50ms delay between requests so ProtonDB API
+is not hammered with 200 simultaneous requests.
+
+---
+
+## TASK 6 — D8VK (DirectX 8 → Vulkan)
+
+### Why
+DXVK handles DirectX 9, 10, and 11. VKD3D handles DirectX 12. But DirectX 8
+games (many classic titles from 2000-2003) are not handled by either —
+they fall through to Wine's software renderer which is extremely slow and
+produces incorrect visuals. D8VK is a companion library to DXVK that
+intercepts DX8 calls and translates them to Vulkan the same way DXVK
+handles DX9-11. Installing D8VK alongside DXVK makes classic DX8 titles
+run at full GPU speed.
+
+### What to implement
+
+D8VK ships as two DLL files: `d3d8.dll` and `d3d8.dll.so`.
+They are deployed exactly the same way DXVK's DLLs are deployed.
+
+In `DXVKHelper.java` (or the DXVK deployment code), after the DXVK
+DLLs are copied into the Wine prefix's `system32` and `syswow64`
+directories, also copy D8VK's `d3d8.dll`:
+
+```java
+// After DXVK deployment loop, add D8VK:
+String[] d8vkDlls = {"d3d8.dll"};
+for (String dll : d8vkDlls) {
+    copyDllToWinePrefix(context, "d8vk/" + dll, winePrefix, dll);
+}
+
+// Register D8VK override so Wine uses it instead of built-in d3d8
+// Add to the existing WINEDLLOVERRIDES value:
+appendWineDllOverride(envVars, "d3d8=n,b");
+```
+
+Store the D8VK DLL in `assets/d8vk/d3d8.dll` — download the latest
+D8VK ARM64-compatible build from the d8vk GitHub releases and add it
+to the project assets.
+
+---
+
+## TASK 7 — High-Rate Input Polling
+
+### Why
+Android polls touch and gamepad input at 60Hz by default, regardless of
+the display refresh rate. This means even on a 144Hz display, input events
+arrive at most 60 times per second — 16ms of input latency floor.
+`requestUnbufferedDispatch` tells Android to deliver input events to the
+app immediately when the hardware samples them, bypassing the normal
+batching. On devices with 120Hz+ displays that support high-rate input
+sampling (most 2022+ flagships), this can halve input latency.
+
+### What to implement
+
+In `XServerScreen.kt`, add this inside the composable where the
+`LocalView` or `LocalWindow` is accessible:
+
+```kotlin
+// Request unbuffered input dispatch for lower latency
+// This tells Android to deliver touch/input events immediately
+// without waiting to batch them — critical for gaming
+val view = LocalView.current
+LaunchedEffect(Unit) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        // API 33+ supports per-class unbuffered dispatch
+        view.requestUnbufferedDispatch(InputDevice.SOURCE_TOUCHSCREEN)
+        view.requestUnbufferedDispatch(InputDevice.SOURCE_GAMEPAD)
+        view.requestUnbufferedDispatch(InputDevice.SOURCE_JOYSTICK)
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        // Older API — request for all MotionEvents
+        @Suppress("DEPRECATION")
+        view.requestUnbufferedDispatch(MotionEvent.obtain(0, 0, MotionEvent.ACTION_MOVE, 0f, 0f, 0))
+    }
+}
+```
+
+Also set the input thread priority in the container startup script:
+```bash
+# Raise input thread priority inside container
+renice -n -5 -p $(pgrep -f "wine" | head -1) 2>/dev/null || true
+```
+
+---
+
+## TASK 8 — Transparent Huge Pages for Box64
+
+### Why
+Box64's JIT compiler allocates large contiguous blocks of memory to store
+translated ARM64 code. By default, Linux manages these blocks using 4KB
+pages, which means a 64MB JIT cache requires 16,384 separate page table
+entries. Each memory access to a new page is a potential TLB miss, which
+stalls the CPU. Transparent Huge Pages (THP) automatically uses 2MB pages
+instead of 4KB for large allocations — reducing TLB misses by up to 512x
+for JIT memory. On large open-world games with extensive JIT caches,
+this is a measurable win.
+
+`BOX64_DYNAREC_ALIGNED_ATOMICS=1` tells Box64 to emit ARM64 aligned
+atomic instructions instead of the slower emulated x86 atomic semantics.
+Pairs with THP because aligned atomics work best with 2MB-aligned memory.
+
+### What to implement
+
+In `GuestProgramLauncherComponent.java`, add to the existing sysctl
+script block AFTER the other sysctl calls:
+
+```bash
+echo always > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true;
+echo defer+madvise > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true;
+```
+
+In `BionicProgramLauncherComponent.java` and
+`GlibcProgramLauncherComponent.java`, add to the Box64 env vars section
+(alongside existing BOX64_DYNAREC_BIGBLOCK etc.):
+
+```java
+envVars.put("BOX64_DYNAREC_ALIGNED_ATOMICS", "1");
+```
+
+---
+
+## TASK 9 — Shader Pre-Warming After Download
+
+### Why
+Currently the DXVK shader state cache builds during the FIRST play session.
+Even with async compilation enabled, the first 5-10 minutes of a new game
+have micro-stutter as thousands of new shaders are encountered and queued
+for async compilation. The fix is to start building the shader cache
+IMMEDIATELY after the game finishes downloading, while the device is idle,
+so the first actual play session has a warm cache.
+
+### What to implement
+
+In the download completion handler (wherever download finished is detected,
+likely in `DownloadService` or `SteamService`):
+
+```kotlin
+fun onDownloadComplete(appId: Int) {
+    // Existing download complete logic...
+
+    // Trigger shader pre-warming in background
+    if (shouldPreWarmShaders(appId)) {
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "shaderPreWarm_$appId",
+            ExistingWorkPolicy.KEEP,
+            buildShaderPreWarmWork(appId)
+        )
+    }
+}
+
+fun buildShaderPreWarmWork(appId: Int): OneTimeWorkRequest {
+    return OneTimeWorkRequestBuilder<ShaderPreWarmWorker>()
+        .setInputData(workDataOf("appId" to appId))
+        .setConstraints(
+            Constraints.Builder()
+                .setRequiresCharging(false)      // run anytime, not just charging
+                .setRequiresBatteryNotLow(true)  // don't run when battery is critical
+                .build()
+        )
+        .build()
+}
+```
+
+Create `ShaderPreWarmWorker.kt`:
+
+```kotlin
+class ShaderPreWarmWorker(
+    context: Context,
+    params: WorkerParameters
+) : CoroutineWorker(context, params) {
+
+    override suspend fun doWork(): Result {
+        val appId = inputData.getInt("appId", -1)
+        if (appId == -1) return Result.failure()
+
+        return withContext(Dispatchers.IO) {
+            try {
+                // Run the game executable once headlessly with a null display
+                // so DXVK initializes its state cache without rendering anything.
+                // The game will fail to open a window (no display) and exit quickly,
+                // but DXVK will have scanned the executable and pre-populated
+                // its pipeline state cache entries.
+                val gameExe = GamePaths.getGameExecutable(applicationContext, appId)
+                if (gameExe != null) {
+                    ContainerUtils.runCommand(
+                        "DISPLAY= DXVK_LOG_LEVEL=none wine \"$gameExe\" --help 2>/dev/null || true"
+                    )
+                }
+                Result.success()
+            } catch (e: Exception) {
+                Result.failure()
+            }
+        }
+    }
+}
+```
+
+Show a subtle indicator in the library grid that shaders are being
+pre-warmed — a small animated progress indicator replacing the status
+chip on the game card while the WorkManager job is running. Use
+`WorkManager.getWorkInfosForUniqueWorkLiveData` to observe the job state.
+
+---
+
+## TASK 10 — VKD3D Descriptor Heap and DX12 Tuning
+
+### Why
+In DirectX 12, games allocate large descriptor heaps to hold references
+to textures, buffers, and render targets. VKD3D-Proton maps these to
+Vulkan descriptor sets. For large open-world games (Cyberpunk 2077,
+Elden Ring, RDR2 in DX12 mode), the default descriptor heap fills up
+and VKD3D must reallocate it mid-frame — this causes a GPU pipeline stall
+that shows up as a 50-150ms frame spike.
+
+`force_static_cbv` tells VKD3D to use static constant buffer descriptors
+instead of dynamic ones. Static descriptors have lower CPU overhead per
+draw call and reduce descriptor heap pressure significantly in games that
+update constant buffers every frame.
+
+### What to implement
+
+In `DXVKHelper.java` (or `vkd3d.env`), find the existing
+`VKD3D_CONFIG` value and APPEND `force_static_cbv` to it.
+Do NOT replace the existing value — append with a comma:
+
+```java
+// Find existing VKD3D_CONFIG value and append force_static_cbv
+String existingVkd3dConfig = envVars.getOrDefault(
+    "VKD3D_CONFIG",
+    "pipeline_library_app_cache,no_upload_hvv"
+);
+if (!existingVkd3dConfig.contains("force_static_cbv")) {
+    envVars.put("VKD3D_CONFIG", existingVkd3dConfig + ",force_static_cbv");
+}
+
+// Disable descriptor QA checks — these are developer debugging tools
+// that add CPU overhead in every draw call. Always off in release.
+envVars.put("VKD3D_DESCRIPTOR_QA_CHECKS", "0");
+```
+
+Also add VKD3D shader model cap to avoid DX12 SM6.6+ shader compilation
+failures on older Turnip versions:
+```java
+// Cap shader model at SM 6.5 — SM 6.6+ features are rarely used by games
+// and Turnip 23.x has incomplete SM 6.6 support that causes crashes
+envVars.put("VKD3D_SHADER_MODEL", "6_5");
+```
+
+---
+
+## Implementation order and verification
+
+Implement in the order listed (1 through 10).
+After each task, confirm:
+- No existing env vars were replaced (always append to WINEDLLOVERRIDES,
+  VKD3D_CONFIG etc. — never overwrite)
+- New sysctl calls are inside the container proot script,
+  not on the Android host
+- No new colors defined — only existing gn_* tokens used for any UI
+- New UI elements (ProtonDB badge, runtime picker) use PluviaTypography
+  and existing chip/card patterns from LibraryListPane and GameSettingsBottomSheet
+- WorkManager dependency confirmed present before adding ShaderPreWarmWorker:
+  implementation("androidx.work:work-runtime-ktx:2.9.0")

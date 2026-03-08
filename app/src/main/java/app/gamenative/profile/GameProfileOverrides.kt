@@ -2,6 +2,13 @@ package app.gamenative.profile
 
 import kotlinx.serialization.Serializable
 
+/** Per-game Wine runtime: stock (app build) or Wine-GE (community build with game patches). */
+@Serializable
+enum class WineRuntime {
+    STOCK,
+    WINE_GE,
+}
+
 /**
  * Per-game overrides stored at keyvalues/profiles/{appId}.json.
  * Null means use global/default; these override base config when set.
@@ -14,7 +21,8 @@ data class GameProfileOverrides(
     val resolutionScale: Float? = null,   // 0.5f .. 1.25f
     val asyncShaders: Boolean? = null,
     val vsync: Boolean? = null,
-    val dxVersionOverride: String? = null // AUTO | DX9 | DX10 | DX11 | DX12; AUTO = no override
+    val dxVersionOverride: String? = null, // AUTO | DX9 | DX10 | DX11 | DX12; AUTO = no override
+    val wineRuntime: WineRuntime = WineRuntime.STOCK,
 ) {
     companion object {
         const val DX_AUTO = "AUTO"

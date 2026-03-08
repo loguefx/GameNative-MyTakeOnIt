@@ -3,12 +3,19 @@ package app.gamenative.preflight
 import android.app.ActivityManager
 import android.content.Context
 import app.gamenative.compat.CompatibilityDb
+import app.gamenative.isolation.GamePaths
+import app.gamenative.profile.GameProfileStore
 import app.gamenative.profile.LaunchProfile
+import app.gamenative.profile.WineRuntime
+import com.winlator.xenvironment.ImageFs
 import java.io.File
 import timber.log.Timber
 
 /**
  * Fail-fast checklist before launch. If any check fails, block with a clear reason.
+ * Addresses the 6 crash causes from gamenative-game-config-engine: wrong Proton version
+ * (handled by recommender), missing/corrupt prefix, wrong DX version (wrapper check),
+ * Turnip/Mesa mismatch (logged), vm.max_map_count (in container script), Proton path.
  */
 object PreflightRunner {
 
@@ -28,6 +35,8 @@ object PreflightRunner {
         checkCpu()?.let { return it }
         checkRam(context)?.let { return it }
         checkStorage(context, appId)?.let { return it }
+        checkWinePrefix(context, prefixPath)?.let { return it }
+        checkWineRuntimePath(context, appId)?.let { return it }
         if (gameBinaryPath != null) {
             checkGameBinary(gameBinaryPath)?.let { return it }
         }
@@ -35,6 +44,61 @@ object PreflightRunner {
             checkDx12Support(context, appId)?.let { return it }
         }
         return PreflightResult.Ok
+    }
+
+    /** Crash cause 2 — Wine prefix must exist and contain at least user.reg (valid prefix). */
+    private fun checkWinePrefix(context: Context, prefixPath: String): PreflightResult? {
+        val imageFs = ImageFs.find(context)
+        val winePrefixDir = File(imageFs.wineprefix)
+        if (!winePrefixDir.isDirectory) {
+            return PreflightResult.Blocked(
+                reason = "Wine prefix is missing or invalid. The prefix directory does not exist. Re-create the container or run container setup.",
+                code = PreflightCode.WINE_PREFIX_INVALID,
+            )
+        }
+        val userReg = File(winePrefixDir, "user.reg")
+        val systemReg = File(winePrefixDir, "system.reg")
+        if (!userReg.canRead() && !systemReg.canRead()) {
+            return PreflightResult.Blocked(
+                reason = "Wine prefix appears corrupt (no user.reg or system.reg). Re-create the container or run container setup.",
+                code = PreflightCode.WINE_PREFIX_INVALID,
+            )
+        }
+        return null
+    }
+
+    /** Crash cause 6 — Proton/Wine runtime path must exist so WINE env points to a valid binary. */
+    private fun checkWineRuntimePath(context: Context, appId: String): PreflightResult? {
+        val overrides = GameProfileStore.load(context, appId)
+        val useWineGe = overrides?.wineRuntime == WineRuntime.WINE_GE
+        if (useWineGe) {
+            val wineGePath = GamePaths.getWineGEPath(context)
+            val wineBin = File(wineGePath, "bin/wine")
+            if (!wineBin.exists()) {
+                return PreflightResult.Blocked(
+                    reason = "Wine-GE is selected but not downloaded. Download Wine-GE in Game Settings → Compatibility, or switch to Stock Wine.",
+                    code = PreflightCode.PROTON_PATH_NOT_FOUND,
+                )
+            }
+            return null
+        }
+        val imageFs = ImageFs.find(context)
+        val winePath = imageFs.winePath
+        if (winePath.isNullOrEmpty()) {
+            return PreflightResult.Blocked(
+                reason = "Wine runtime path is not set. Install a compatibility layer (Proton/Wine) in Component settings.",
+                code = PreflightCode.PROTON_PATH_NOT_FOUND,
+            )
+        }
+        val wineDir = File(winePath)
+        val wineBin = File(wineDir, "bin/wine")
+        if (!wineDir.exists() || !wineBin.exists()) {
+            return PreflightResult.Blocked(
+                reason = "Proton/Wine runtime not found at $winePath. Reinstall the compatibility layer in Component settings.",
+                code = PreflightCode.PROTON_PATH_NOT_FOUND,
+            )
+        }
+        return null
     }
 
     private fun checkCpu(): PreflightResult? {

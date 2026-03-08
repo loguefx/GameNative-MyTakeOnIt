@@ -80,6 +80,7 @@ import app.gamenative.ui.screen.library.components.LibraryListPane
 import app.gamenative.ui.theme.PluviaTheme
 import app.gamenative.ui.components.rememberCustomGameFolderPicker
 import app.gamenative.ui.components.requestPermissionsForPath
+import app.gamenative.hardware.HardwareProfileCache
 import app.gamenative.utils.CustomGameScanner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -143,6 +144,8 @@ private fun LibraryScreenContent(
     isOffline: Boolean = false,
 ) {
     val context = LocalContext.current
+    // Prewarm hardware profile cache so launch path gets cached value (no runBlocking stall)
+    LaunchedEffect(Unit) { HardwareProfileCache.getProfile(context) }
     var selectedAppId by remember { mutableStateOf<String?>(null) }
     // Keep a stable reference to the selected item so detail view doesn't disappear during list refresh/pagination.
     var selectedLibraryItem by remember { mutableStateOf<LibraryItem?>(null) }

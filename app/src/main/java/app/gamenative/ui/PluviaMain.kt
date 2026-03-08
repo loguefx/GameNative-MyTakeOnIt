@@ -68,7 +68,9 @@ import app.gamenative.ui.model.MainViewModel
 import app.gamenative.ui.screen.HomeScreen
 import app.gamenative.ui.screen.PluviaScreen
 import app.gamenative.ui.screen.login.UserLoginScreen
+import app.gamenative.config.GameConfigStore
 import app.gamenative.ui.screen.achievements.AchievementsScreen
+import app.gamenative.ui.screen.gameconfig.GameConfigScreen
 import app.gamenative.ui.screen.settings.SettingsScreen
 import app.gamenative.ui.screen.xserver.XServerScreen
 import app.gamenative.ui.theme.PluviaTheme
@@ -1102,6 +1104,43 @@ fun PluviaMain(
             ) {
                 AchievementsScreen(
                     onBack = { navController.navigateUp() },
+                )
+            }
+
+            /** Game Configuration (per-app config + presets; launch with these settings) **/
+            composable(
+                route = PluviaScreen.GameConfig.route,
+                arguments = listOf(
+                    navArgument(PluviaScreen.GameConfig.ARG_APP_ID) { type = NavType.StringType },
+                ),
+            ) { backStackEntry ->
+                val appId = backStackEntry.arguments?.getString(PluviaScreen.GameConfig.ARG_APP_ID).orEmpty()
+                val scope = rememberCoroutineScope()
+                GameConfigScreen(
+                    appId = appId,
+                    gameName = "",
+                    onLaunch = { config ->
+                        scope.launch(Dispatchers.IO) {
+                            GameConfigStore.save(context, appId, config)
+                            withContext(Dispatchers.Main) {
+                                viewModel.setLaunchedAppId(appId)
+                                viewModel.setBootToContainer(false)
+                                viewModel.setTestGraphics(false)
+                                viewModel.setOffline(false)
+                                preLaunchApp(
+                                    context = context,
+                                    appId = appId,
+                                    setLoadingDialogVisible = viewModel::setLoadingDialogVisible,
+                                    setLoadingProgress = viewModel::setLoadingDialogProgress,
+                                    setLoadingMessage = viewModel::setLoadingDialogMessage,
+                                    setMessageDialogState = setMessageDialogState,
+                                    onSuccess = viewModel::launchApp,
+                                    bootToContainer = false,
+                                )
+                            }
+                        }
+                    },
+                    onNavigateBack = { navController.navigateUp() },
                 )
             }
 

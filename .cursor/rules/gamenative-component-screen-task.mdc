@@ -1,0 +1,59 @@
+---
+description: Task prompt for implementing the Component screen (download Proton, DXVK, VKD3D, Box64, Turnip from GitHub). Auto-loads when editing Component-related files; can also be pasted when starting c6.
+globs: ["**/*Component*", "**/*Download*", "**/*Version*", "**/*Update*", "**/*GameSettings*", "**/*Compat*", "**/*Proton*", "**/*DXVK*", "**/*VKD3D*", "**/*Box64*", "**/*Turnip*", "**/ComponentDao*", "**/ComponentRepository*", "**/ComponentViewModel*"]
+alwaysApply: false
+---
+
+# Component screen — task prompt (c6)
+
+Use this when implementing the **Component screen** for downloading and managing Proton, DXVK, VKD3D, Box64, and Turnip (and optionally Mesa) from GitHub releases.
+
+## What to build
+
+A Component screen (or panel) where users can:
+
+- See available and installed versions of each component (Proton, DXVK, VKD3D, Box64, Turnip, Mesa)
+- Download new versions from GitHub releases
+- Set the **active** version **per game** (two games can use different Proton versions)
+- Remove installed versions
+- See RECOMMENDED and ACTIVE badges
+
+Full UI and data-model spec: **gamenative-component-updater.mdc** and **gamenative-game-settings-screen.mdc**.
+
+## Requirements to specify upfront (easy to miss)
+
+1. **GitHub API** — Stagger all GitHub API requests **100ms apart** to avoid rate limiting. Do not fire multiple requests in a tight loop.
+
+2. **Caching** — Show **cached data immediately**, refresh in background. Never block the UI on network. If no cache, show shimmer placeholders until first fetch completes.
+
+3. **Download/extract** — Download to **cacheDir** first, extract to **filesDir**. Never use external storage for component installs.
+
+4. **After Turnip/Mesa install** — On successful install of any **Turnip** or **Mesa** component, call **HardwareProfileCache.invalidate(context)**. This is already in the rules; repeating here so it is not missed.
+
+5. **ACTIVE badge** — The ACTIVE badge must reflect the **per-game active version** (for the current appId), not a global active version. Two different games can use different Proton (or other component) versions simultaneously. All set-active / get-active APIs must be per-game (appId-scoped).
+
+Reference: `.cursor/rules/gamenative-component-updater.mdc` (implementation checklist + full spec).
+
+## Implementation order (build in this order)
+
+Build the data layer first so the UI has real data to bind to and data-shape issues are caught before UI code.
+
+1. **ComponentDao and Room entities first** — The cache layer that makes the UI feel instant. Tables for installed components, active version per (componentType, appId), and any cached release metadata. **Before creating ComponentDao, check for an existing Room AppDatabase in the project and add ComponentEntity and ComponentDao to it rather than creating a new database.** The project already has Room for chat history, ProtonDB cache, game profiles, etc. — use that same database instance; do not create a second Room database for components.
+2. **ComponentRepository** — GitHub fetch (with 100ms stagger), download to cacheDir, extract to filesDir, and all DAO reads/writes. This is where the hard logic lives.
+3. **ComponentViewModel** — Wire repository to StateFlows. Load cached data immediately, refresh in background. Expose releasesByType, downloadProgress, availableUpdates, and actions (download, remove, setActive).
+4. **UI last** — ComponentSettingsPanel, ComponentSection, ComponentReleaseRow, UpdatesBanner. Building UI last means it binds to real repository/ViewModel contracts instead of placeholder structures.
+
+**After c6 is complete:** Run a search for any ComponentDao or ComponentRepository method calls that are not on Dispatchers.IO and flag them. All GitHub fetch, download, extract, and Room write operations must be on IO dispatcher, never on Main. This catches ViewModel methods that launch on the default dispatcher and accidentally do network or disk IO on Main (ANR risk).
+
+## Verification checklist (when c6 comes back)
+
+Before moving on, confirm all six:
+
+1. **ComponentEntity and ComponentDao** were added to the existing AppDatabase, not a new one.
+2. **GitHub requests** have the 100ms stagger (e.g. `delay(index * 100L)`).
+3. **Download path** is cacheDir; **extract path** is filesDir.
+4. **HardwareProfileCache.invalidate(context)** is called after Turnip/Mesa install success.
+5. **ACTIVE badge** query is scoped by appId, not global.
+6. The **Dispatchers.IO audit** came back clean.
+
+If all six pass, c6 is done and the full spec is complete end to end.

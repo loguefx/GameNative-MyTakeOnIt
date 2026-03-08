@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import app.gamenative.R
 import app.gamenative.profile.GameProfileOverrides
 import app.gamenative.profile.GameProfileStore
+import app.gamenative.profile.WineRuntime
 import app.gamenative.utils.ContainerUtils
 import com.winlator.container.ContainerData
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +65,7 @@ fun GameSettingsBottomSheet(
     var asyncShaders by remember(appId) { mutableStateOf<Boolean?>(null) }
     var vsync by remember(appId) { mutableStateOf<Boolean?>(null) }
     var dxVersionOverride by remember(appId) { mutableStateOf<String?>(null) }
+    var wineRuntime by remember(appId) { mutableStateOf(WineRuntime.STOCK) }
     var loaded by remember(appId) { mutableStateOf(false) }
 
     LaunchedEffect(appId) {
@@ -74,6 +76,7 @@ fun GameSettingsBottomSheet(
             asyncShaders = overrides.asyncShaders
             vsync = overrides.vsync
             dxVersionOverride = overrides.dxVersionOverride ?: GameProfileOverrides.DX_AUTO
+            wineRuntime = overrides.wineRuntime
         } else {
             dxVersionOverride = GameProfileOverrides.DX_AUTO
         }
@@ -164,6 +167,25 @@ fun GameSettingsBottomSheet(
             label = { if (it == GameProfileOverrides.DX_AUTO) dxAutoStr else it },
             onSelect = { dxVersionOverride = it },
         )
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Wine Runtime (Task 4 — Wine-GE option)
+        Text(text = "Wine runtime", style = MaterialTheme.typography.titleSmall)
+        Spacer(modifier = Modifier.height(4.dp))
+        RowOfOptions(
+            current = wineRuntime,
+            options = listOf(WineRuntime.STOCK, WineRuntime.WINE_GE),
+            label = { if (it == WineRuntime.STOCK) "Stock Wine" else "Wine-GE" },
+            onSelect = { wineRuntime = it },
+        )
+        if (wineRuntime == WineRuntime.WINE_GE) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Wine-GE includes community patches for better game compatibility. Download required on first use (~150MB).",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         Spacer(modifier = Modifier.height(24.dp))
 
         Row(
@@ -181,6 +203,7 @@ fun GameSettingsBottomSheet(
                         asyncShaders = asyncShaders,
                         vsync = vsync,
                         dxVersionOverride = if (dxVersionOverride == GameProfileOverrides.DX_AUTO) null else dxVersionOverride,
+                        wineRuntime = wineRuntime,
                     )
                     scope.launch {
                         saveAndApply(context, appId, overrides)

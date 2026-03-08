@@ -41,6 +41,12 @@ import app.gamenative.events.AndroidEvent
 import app.gamenative.events.SteamEvent
 import app.gamenative.utils.ContainerUtils
 import app.gamenative.utils.Net
+import app.gamenative.work.ShaderPreWarmWorker
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import app.gamenative.utils.SteamUtils
 import app.gamenative.utils.MarkerUtils
 import app.gamenative.enums.Marker
@@ -1871,6 +1877,24 @@ class SteamService : Service(), IChallengeUrlChanged {
                     MarkerUtils.removeMarker(appDirPath, Marker.STEAM_COLDCLIENT_USED)
                 }
                 PluviaApp.events.emit(AndroidEvent.LibraryInstallStatusChanged(downloadInfo.gameId))
+
+                // Task 9 — Shader pre-warming: enqueue worker to prime DXVK cache when device is idle
+                instance?.let { service ->
+                    val work = OneTimeWorkRequestBuilder<ShaderPreWarmWorker>()
+                        .setInputData(workDataOf(ShaderPreWarmWorker.KEY_APP_ID to downloadInfo.gameId))
+                        .setConstraints(
+                            Constraints.Builder()
+                                .setRequiresBatteryNotLow(true)
+                                .build(),
+                        )
+                        .build()
+                    WorkManager.getInstance(service.applicationContext)
+                        .enqueueUniqueWork(
+                            "shaderPreWarm_${downloadInfo.gameId}",
+                            ExistingWorkPolicy.KEEP,
+                            work,
+                        )
+                }
 
                 // Clear persisted bytes file on successful completion
                 downloadInfo.clearPersistedBytesDownloaded(appDirPath)

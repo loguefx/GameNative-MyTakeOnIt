@@ -26,5 +26,6 @@ enum class AppOptionMenuType(val text: String) {
     ManageGameContent("Manage DLC"),
     LastRunDiagnostics("Last run diagnostics"),
     GameSettings("Game settings"),
+    GameConfig("Configuration"),
     Achievements("Achievements");
 }

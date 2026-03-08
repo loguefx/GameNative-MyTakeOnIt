@@ -12,8 +12,10 @@ object GamePaths {
 
     private const val DIR_PREFIXES = "prefixes"
     private const val DIR_DXVK_CACHE = "dxvk_cache"
+    private const val DIR_DXVK_CONFIG = "dxvk_config"
     private const val DIR_VKD3D_CACHE = "vkd3d_cache"
     private const val DIR_MESA_CACHE = "mesa_cache"
+    private const val DIR_WINE_GE = "wine_ge"
 
     /**
      * Root directory for all isolation data (prefixes and caches).
@@ -78,6 +80,29 @@ object GamePaths {
         getVkd3dCacheDir(context, appId).mkdirs()
         getShaderCacheDir(context, appId).mkdirs()
         getMesaCacheDir(context, appId).mkdirs()
+    }
+
+    /**
+     * Directory for the Wine-GE runtime (extracted from GitHub release).
+     * When present, use bin/wine, bin/wineserver, lib/wine for WINE/WINESERVER/WINELOADER/WINEDLLPATH.
+     */
+    fun getWineGEPath(context: Context): String {
+        return File(getIsolationRoot(context), DIR_WINE_GE).absolutePath
+    }
+
+    /**
+     * Per-game DXVK config file path. Set DXVK_CONFIG_FILE to this when launching.
+     * DXVK accepts an arbitrary absolute path for DXVK_CONFIG_FILE (doitsujin/dxvk wiki).
+     */
+    fun getDxvkConfigPath(context: Context, appId: String): String {
+        return File(getIsolationRoot(context), "$DIR_DXVK_CONFIG/$appId/dxvk.conf").absolutePath
+    }
+
+    /**
+     * Compat data / prefix path for Steam compatibility layer (STEAM_COMPAT_DATA_PATH).
+     */
+    fun getCompatDataPath(context: Context, appId: String): String {
+        return getPrefixDir(context, appId).absolutePath
     }
 
     /**

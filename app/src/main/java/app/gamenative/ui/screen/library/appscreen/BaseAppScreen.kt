@@ -343,6 +343,18 @@ abstract class BaseAppScreen {
         )
     }
 
+    @Composable
+    protected open fun getGameConfigOption(
+        context: Context,
+        libraryItem: LibraryItem,
+        onNavigateRoute: (String) -> Unit,
+    ): AppMenuOption? {
+        return AppMenuOption(
+            optionType = AppOptionMenuType.GameConfig,
+            onClick = { onNavigateRoute(app.gamenative.ui.screen.PluviaScreen.GameConfig.route(libraryItem.appId)) },
+        )
+    }
+
     /**
      * Get source-specific menu options. Subclasses can override to add custom options.
      */
@@ -545,6 +557,7 @@ abstract class BaseAppScreen {
             getTestGraphicsOption(context, libraryItem, onTestGraphics)?.let { menuOptions.add(it) }
             getLastRunDiagnosticsOption(context, libraryItem, onShowLastRunDiagnostics)?.let { menuOptions.add(it) }
             getGameSettingsOption(context, libraryItem, onShowGameSettings)?.let { menuOptions.add(it) }
+            getGameConfigOption(context, libraryItem, onNavigateRoute)?.let { menuOptions.add(it) }
             getAchievementsOption(context, libraryItem, onNavigateRoute)?.let { menuOptions.add(it) }
             getResetContainerOption(context, libraryItem)?.let { menuOptions.add(it) }
             getCreateShortcutOption(context, libraryItem)?.let { menuOptions.add(it) }

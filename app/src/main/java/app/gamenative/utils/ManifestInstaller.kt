@@ -3,6 +3,7 @@ package app.gamenative.utils
 import android.content.Context
 import android.net.Uri
 import app.gamenative.R
+import app.gamenative.hardware.HardwareProfileCache
 import app.gamenative.service.SteamService
 import com.winlator.contents.AdrenotoolsManager
 import com.winlator.contents.ContentProfile
@@ -37,6 +38,7 @@ object ManifestInstaller {
                     message = context.getString(R.string.manifest_install_failed, entry.name),
                 )
             }
+            HardwareProfileCache.invalidate(context)
             return@withContext ManifestInstallResult(
                 success = true,
                 message = context.getString(R.string.manifest_install_success, entry.name),
@@ -104,6 +106,11 @@ object ManifestInstaller {
                 )
             }
 
+            if (expectedType == ContentProfile.ContentType.CONTENT_TYPE_TURNIP ||
+                expectedType == ContentProfile.ContentType.CONTENT_TYPE_VORTEK ||
+                expectedType == ContentProfile.ContentType.CONTENT_TYPE_VIRGL) {
+                HardwareProfileCache.invalidate(context)
+            }
             return@withContext ManifestInstallResult(
                 success = true,
                 message = context.getString(R.string.manifest_install_success, entry.name),

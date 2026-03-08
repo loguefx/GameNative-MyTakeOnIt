@@ -46,4 +46,19 @@ object CompatibilityDb {
      * DX11-first policy: only allow DX12 if game is on DX12 Verified list.
      */
     fun allowDx12For(steamAppId: Long): Boolean = isDx12Verified(steamAppId)
+
+    /**
+     * Maps compatibility verification status to ProtonDB-style tier for GameConfigRecommender.
+     * BOOTS_ONLY → SILVER: game launches but has significant issues; Silver means "works with
+     * workarounds", which matches that state.
+     */
+    fun getProtonTierFor(steamAppId: Long): app.gamenative.proton.ProtonTier {
+        val entry = get(steamAppId) ?: return app.gamenative.proton.ProtonTier.UNKNOWN
+        return when (entry.verificationStatus) {
+            CompatibilityEntry.VerificationStatus.VERIFIED -> app.gamenative.proton.ProtonTier.PLATINUM
+            CompatibilityEntry.VerificationStatus.BOOTS_ONLY -> app.gamenative.proton.ProtonTier.SILVER
+            CompatibilityEntry.VerificationStatus.UNSUPPORTED -> app.gamenative.proton.ProtonTier.BORKED
+            CompatibilityEntry.VerificationStatus.UNKNOWN -> app.gamenative.proton.ProtonTier.UNKNOWN
+        }
+    }
 }

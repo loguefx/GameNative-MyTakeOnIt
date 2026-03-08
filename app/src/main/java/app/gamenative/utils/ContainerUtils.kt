@@ -15,6 +15,8 @@ import app.gamenative.utils.CustomGameScanner
 import com.winlator.container.Container
 import com.winlator.container.ContainerData
 import com.winlator.container.ContainerManager
+import com.winlator.core.envvars.EnvVars
+import com.winlator.xenvironment.components.GuestProgramLauncherComponent
 import com.winlator.core.DefaultVersion
 import com.winlator.core.FileUtils
 import com.winlator.core.GPUInformation
@@ -27,6 +29,7 @@ import com.winlator.winhandler.WinHandler.PreferredInputApi
 import com.winlator.xenvironment.ImageFs
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
@@ -544,6 +547,96 @@ object ContainerUtils {
     fun hasContainer(context: Context, appId: String): Boolean {
         val containerManager = ContainerManager(context)
         return containerManager.hasContainer(appId)
+    }
+
+    /**
+     * Runs a shell command inside the proot container (same root/bindings as game).
+     * Use for taskset, renice, etc. Must be called from IO dispatcher.
+     */
+    fun runCommand(context: Context, appId: String, shellCommand: String) {
+        if (!hasContainer(context, appId)) return
+        val container = getContainer(context, appId)
+        val bindingPaths = container.drivesIterator().map { it[1] }.toTypedArray()
+        GuestProgramLauncherComponent.execInContainer(
+            context,
+            proot32 = false,
+            bindingPaths,
+            null,
+            null,
+            shellCommand,
+        )
+    }
+
+    /**
+     * Runs a shell command inside the proot container and returns stdout.
+     * Must be called from IO dispatcher.
+     */
+    fun runCommandOutput(context: Context, appId: String, shellCommand: String): String? {
+        if (!hasContainer(context, appId)) return null
+        val container = getContainer(context, appId)
+        val bindingPaths = container.drivesIterator().map { it[1] }.toTypedArray()
+        return GuestProgramLauncherComponent.execInContainerWithOutput(
+            context,
+            proot32 = false,
+            bindingPaths,
+            null as EnvVars?,
+            null,
+            shellCommand,
+        )
+    }
+
+    private const val PULSE_DAEMON_GN_MARKER = "# GameNative audio tuning"
+
+    /**
+     * Ensures container etc/pulse/daemon.conf has low-latency settings (Task 3).
+     * Call when using PulseAudio driver so Wine audio thread doesn't block the game thread.
+     */
+    fun ensurePulseAudioLowLatencyConfig(context: Context) {
+        val rootDir = com.winlator.xenvironment.ImageFs.find(context).rootDir
+        val daemonConf = File(rootDir, "etc/pulse/daemon.conf")
+        val fragmentLines = """
+            # GameNative audio tuning — low latency for games
+            default-fragments = 2
+            default-fragment-size-msec = 5
+        """.trimIndent()
+        try {
+            daemonConf.parentFile?.mkdirs()
+            if (daemonConf.exists()) {
+                val content = daemonConf.readText()
+                if (content.contains(PULSE_DAEMON_GN_MARKER)) return
+                daemonConf.appendText("\n$fragmentLines\n")
+            } else {
+                daemonConf.writeText("$fragmentLines\n")
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Could not write PulseAudio daemon.conf: ${e.message}")
+        }
+    }
+
+    /**
+     * After game launch, pin Wine process to P-cores (0xF0) inside the container.
+     * Only runs for Bionic (proot) containers; Glibc runs on host so skipped.
+     * Call from a background coroutine (e.g. viewModelScope.launch(Dispatchers.IO)).
+     */
+    suspend fun applyCpuAffinityInContainer(context: Context, appId: String) {
+        if (!hasContainer(context, appId)) return
+        val container = getContainer(context, appId)
+        if (container.containerVariant != Container.BIONIC) return
+        var pid: String? = null
+        repeat(30) {
+            if (pid != null) return@repeat
+            pid = runCommandOutput(context, appId, "pgrep -f wine | head -1")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+            if (pid.isNullOrBlank()) {
+                pid = null
+                delay(500)
+            }
+        }
+        pid?.let { p ->
+            runCommand(context, appId, "taskset -p 0xF0 $p")
+            Timber.d("CPU affinity applied to Wine PID $p")
+        }
     }
 
     fun getContainer(context: Context, appId: String): Container {

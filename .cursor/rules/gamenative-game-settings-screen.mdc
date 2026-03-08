@@ -1,0 +1,1102 @@
+---
+description: Full game settings screen with sidebar navigation (General, Compatibility, Component, Backup/Restore, Controller, Input Mapping, Touch Controls), intelligent hardware-aware recommendations, compatibility warnings, and per-game config persistence. Mirrors GameHub's settings UI but smarter. Apply when editing game settings, config, launch, or compatibility screens.
+globs: ["**/*GameSettings*", "**/*GameConfig*", "**/*Compat*", "**/*Launch*", "**/*Container*", "**/*Hardware*"]
+alwaysApply: false
+---
+
+# GameNative — Intelligent Game Settings System
+
+## Overview
+
+This builds a full Game Settings screen that looks and works like the
+GameHub settings UI shown in the reference screenshots, but with smarter
+logic. The screen has a LEFT SIDEBAR with categories and a RIGHT PANEL
+showing settings for the selected category.
+
+When a game cannot run due to hardware limitations, show a clear
+compatibility warning with specific reasons and suggestions — never
+let the user launch into a black screen crash without explanation.
+
+---
+
+## SCREEN LAYOUT
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  ←  Game Settings              [?] Help    [▶ Launch]           │
+├─────────────────┬────────────────────────────────────────────────┤
+│                 │                                                │
+│  General    ●   │   [Content panel for selected category]       │
+│                 │                                                │
+│  Compatibility  │                                                │
+│                 │                                                │
+│  Component      │                                                │
+│                 │                                                │
+│  Backup/Restore │                                                │
+│                 │                                                │
+│  Controller     │                                                │
+│                 │                                                │
+│  Input Mapping  │                                                │
+│                 │                                                │
+│  Touch Controls │                                                │
+│                 │                                                │
+└─────────────────┴────────────────────────────────────────────────┘
+```
+
+On phones (portrait): sidebar collapses to a horizontal chip row at top.
+On tablets / landscape: show true two-pane layout as above.
+
+---
+
+## PART 1 — COMPATIBILITY WARNING SYSTEM
+
+This is the most important part. Run this check BEFORE the settings
+screen loads and BEFORE any launch attempt.
+
+### CompatibilityChecker.kt
+
+```kotlin
+object CompatibilityChecker {
+
+    data class CompatibilityResult(
+        val canRun: Boolean,
+        val warnings: List<CompatWarning>,
+        val blockers: List<CompatBlocker>,   // hard blockers = cannot run
+        val recommendedAction: String
+    )
+
+    data class CompatWarning(
+        val icon: ImageVector,
+        val title: String,
+        val detail: String,
+        val severity: Severity   // LOW, MEDIUM, HIGH
+    )
+
+    data class CompatBlocker(
+        val icon: ImageVector,
+        val title: String,
+        val detail: String,
+        val fixAction: String?   // label of button to fix it, null if unfixable
+    )
+
+    enum class Severity { LOW, MEDIUM, HIGH }
+
+    fun check(
+        context: Context,
+        appId: Int,
+        gameName: String,
+        hardware: HardwareProfile,
+        gameRequirements: GameRequirements?  // from SteamAPI if available
+    ): CompatibilityResult {
+
+        val warnings  = mutableListOf<CompatWarning>()
+        val blockers  = mutableListOf<CompatBlocker>()
+
+        // ── RAM check ────────────────────────────────────────────────────
+        val requiredRamMb = gameRequirements?.minimumRamMb ?: 4096
+        val recommendedRamMb = gameRequirements?.recommendedRamMb ?: 8192
+
+        when {
+            hardware.availableRamMb < requiredRamMb -> blockers.add(
+                CompatBlocker(
+                    icon = Icons.Default.Memory,
+                    title = "Insufficient RAM",
+                    detail = "This game requires ${requiredRamMb / 1024}GB RAM minimum. " +
+                             "Your device has ${hardware.totalRamMb / 1024}GB total " +
+                             "(${hardware.availableRamMb / 1024}GB currently available). " +
+                             "Close background apps and try again.",
+                    fixAction = "Free Up Memory"
+                )
+            )
+            hardware.availableRamMb < recommendedRamMb -> warnings.add(
+                CompatWarning(
+                    icon = Icons.Default.Memory,
+                    title = "Low Available RAM",
+                    detail = "Recommended: ${recommendedRamMb / 1024}GB. " +
+                             "You have ${hardware.availableRamMb / 1024}GB available. " +
+                             "Performance may be reduced. Close other apps for best results.",
+                    severity = Severity.MEDIUM
+                )
+            )
+        }
+
+        // ── Storage check ────────────────────────────────────────────────
+        val requiredStorageMb = gameRequirements?.storageMb ?: 0
+        val freeStorageMb = getFreeStorageMb(context)
+        if (requiredStorageMb > 0 && freeStorageMb < requiredStorageMb + 2048) {
+            blockers.add(
+                CompatBlocker(
+                    icon = Icons.Default.Storage,
+                    title = "Not Enough Storage",
+                    detail = "This game needs ${formatSize(requiredStorageMb)}. " +
+                             "You have ${formatSize(freeStorageMb)} free. " +
+                             "Free up ${formatSize(requiredStorageMb - freeStorageMb + 2048)} to continue.",
+                    fixAction = "Open Storage Settings"
+                )
+            )
+        }
+
+        // ── Vulkan check ─────────────────────────────────────────────────
+        if (!hardware.supportsVulkan13) {
+            if (hardware.gpuVulkanVersion.startsWith("1.1") ||
+                hardware.gpuVulkanVersion.startsWith("1.0")) {
+                blockers.add(
+                    CompatBlocker(
+                        icon = Icons.Default.BrokenImage,
+                        title = "Vulkan Version Too Old",
+                        detail = "Your GPU supports Vulkan ${hardware.gpuVulkanVersion}. " +
+                                 "Most Steam games require Vulkan 1.2 or higher. " +
+                                 "DXVK and VKD3D will not function correctly.",
+                        fixAction = null   // unfixable without new hardware
+                    )
+                )
+            } else {
+                warnings.add(
+                    CompatWarning(
+                        icon = Icons.Default.Warning,
+                        title = "Vulkan 1.3 Not Supported",
+                        detail = "Your GPU supports Vulkan ${hardware.gpuVulkanVersion}. " +
+                                 "Some DX12 features may not work. " +
+                                 "DX11 mode recommended for this device.",
+                        severity = Severity.MEDIUM
+                    )
+                )
+            }
+        }
+
+        // ── GPU family check ──────────────────────────────────────────────
+        if (hardware.gpuVendor == GpuVendor.MALI) {
+            warnings.add(
+                CompatWarning(
+                    icon = Icons.Default.Info,
+                    title = "Mali GPU Detected",
+                    detail = "Community Turnip GPU driver is only available for Adreno GPUs. " +
+                             "Your Mali GPU will use the stock driver, which may have " +
+                             "lower Vulkan performance. DX11 mode recommended.",
+                    severity = Severity.HIGH
+                )
+            )
+        }
+
+        // ── Thermal check ─────────────────────────────────────────────────
+        if (hardware.thermalHeadroom < 0.2f) {
+            warnings.add(
+                CompatWarning(
+                    icon = Icons.Default.Thermostat,
+                    title = "Device Running Hot",
+                    detail = "Your device is near its thermal limit. " +
+                             "Performance will be throttled to prevent overheating. " +
+                             "Let your device cool down for best performance.",
+                    severity = Severity.HIGH
+                )
+            )
+        }
+
+        // ── ProtonDB borked check ─────────────────────────────────────────
+        if (KnownGameFixes.isBorked(appId)) {
+            warnings.add(
+                CompatWarning(
+                    icon = Icons.Default.ErrorOutline,
+                    title = "Known Compatibility Issues",
+                    detail = "${KnownGameFixes.getBorkedReason(appId) ?: "This game has reported issues on Linux/Proton."} " +
+                             "Try the Compatibility preset and Wine-GE runtime.",
+                    severity = Severity.HIGH
+                )
+            )
+        }
+
+        // ── 32-bit game on 64-bit only container ──────────────────────────
+        if (KnownGameFixes.is32BitOnly(appId) && !container32BitSupported()) {
+            warnings.add(
+                CompatWarning(
+                    icon = Icons.Default.Warning,
+                    title = "32-bit Game",
+                    detail = "This game is 32-bit only. Ensure WoW64 mode is enabled " +
+                             "in Compatibility settings, or it will fail to launch.",
+                    severity = Severity.HIGH
+                )
+            )
+        }
+
+        val canRun = blockers.isEmpty()
+
+        return CompatibilityResult(
+            canRun = canRun,
+            warnings = warnings,
+            blockers = blockers,
+            recommendedAction = when {
+                !canRun                  -> "Cannot launch — fix blockers first"
+                warnings.any { it.severity == Severity.HIGH } ->
+                    "Can launch with reduced performance — review warnings"
+                warnings.isNotEmpty()    -> "May run with minor issues"
+                else                     -> "Should run well on this device"
+            }
+        )
+    }
+}
+```
+
+### Compatibility banner shown at top of settings screen
+
+```kotlin
+@Composable
+fun CompatibilityBanner(result: CompatibilityResult) {
+    if (result.blockers.isEmpty() && result.warnings.isEmpty()) {
+        // Green — all good
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = gnNeonTeal.copy(alpha = 0.1f)),
+            border = BorderStroke(1.dp, gnNeonTeal.copy(alpha = 0.3f)),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(Icons.Default.CheckCircle, null, tint = gnNeonTeal, modifier = Modifier.size(18.dp))
+                Text(
+                    "This game should run well on your device.",
+                    style = PluviaTypography.bodySmall,
+                    color = gnNeonTeal
+                )
+            }
+        }
+        return
+    }
+
+    // Blockers — red, cannot run
+    result.blockers.forEach { blocker ->
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = gnStatusError.copy(alpha = 0.1f)),
+            border = BorderStroke(1.dp, gnStatusError.copy(alpha = 0.4f)),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(blocker.icon, null, tint = gnStatusError, modifier = Modifier.size(16.dp))
+                    Text(blocker.title, style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.SemiBold), color = gnStatusError)
+                }
+                Text(blocker.detail, style = PluviaTypography.bodySmall, color = gnTextSecondary)
+                if (blocker.fixAction != null) {
+                    TextButton(onClick = { /* handle fix */ }) {
+                        Text(blocker.fixAction, color = gnStatusError, style = PluviaTypography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+
+    // Warnings — orange, can run but with issues
+    result.warnings.forEach { warning ->
+        val color = when (warning.severity) {
+            CompatibilityChecker.Severity.HIGH   -> gnNeonOrange
+            CompatibilityChecker.Severity.MEDIUM -> gnNeonOrange.copy(alpha = 0.7f)
+            CompatibilityChecker.Severity.LOW    -> gnTextSecondary
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.08f)),
+            border = BorderStroke(1.dp, color.copy(alpha = 0.3f)),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(warning.icon, null, tint = color, modifier = Modifier.size(16.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(warning.title, style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.SemiBold), color = color)
+                    Text(warning.detail, style = PluviaTypography.bodySmall, color = gnTextSecondary)
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## PART 2 — SETTINGS CATEGORIES
+
+### Category: GENERAL
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Enter Container Desktop    →                       │
+│  Launch Wine desktop environment                    │
+├─────────────────────────────────────────────────────┤
+│  Startup File Path                                  │
+│  game.exe path              ...redneck.exe  →       │
+├─────────────────────────────────────────────────────┤
+│  Language                   en_US  →                │
+│  Container system language                          │
+├─────────────────────────────────────────────────────┤
+│  Game Resolution            1280 x 720  →           │
+│  Screen resolution when running                     │
+├─────────────────────────────────────────────────────┤
+│  DirectX HUD                Disable  →              │
+│  FPS and debug info overlay                         │
+├─────────────────────────────────────────────────────┤
+│  FPS Limit                  60 FPS  →               │
+├─────────────────────────────────────────────────────┤
+│  Resolution Scale           100%  →                 │
+└─────────────────────────────────────────────────────┘
+```
+
+Each row: `SettingsNavigationRow` composable:
+```kotlin
+@Composable
+fun SettingsNavigationRow(
+    title: String,
+    subtitle: String = "",
+    currentValue: String = "",
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = PluviaTypography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = gnTextPrimary)
+            if (subtitle.isNotBlank()) {
+                Text(subtitle, style = PluviaTypography.bodySmall, color = gnTextSecondary, maxLines = 2)
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (currentValue.isNotBlank()) {
+                Text(currentValue, style = PluviaTypography.bodySmall, color = gnTextSecondary)
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = gnTextTertiary, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+```
+
+### Category: COMPATIBILITY
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Compatibility Layer        wine9.5-x64-1  →        │
+│  Wine version used to run the game                  │
+├─────────────────────────────────────────────────────┤
+│  Translation Params         →                       │
+│  DXVK / VKD3D / Wine env vars                       │
+├─────────────────────────────────────────────────────┤
+│  GPU Driver                 Turnip-24.1  →          │
+│  Vulkan driver used for rendering                   │
+├─────────────────────────────────────────────────────┤
+│  Audio Driver               Pulse  →                │
+│  PulseAudio / PipeWire                              │
+├─────────────────────────────────────────────────────┤
+│  DXVK Version               dxvk-2.4-async  →      │
+│  DirectX 9/10/11 → Vulkan                           │
+├─────────────────────────────────────────────────────┤
+│  VKD3D Version              vkd3d-2.12  →           │
+│  DirectX 12 → Vulkan                                │
+├─────────────────────────────────────────────────────┤
+│  CPU Translator             Box64-0.32  →           │
+│  x86_64 → ARM64 JIT                                 │
+├─────────────────────────────────────────────────────┤
+│  WoW64 Mode                 OFF  →                  │
+│  Enable for 32-bit games                            │
+└─────────────────────────────────────────────────────┘
+```
+
+**Compatibility Layer picker** — bottom sheet with all available versions:
+```kotlin
+val compatibilityLayers = listOf(
+    CompatLayer("Proton 10.0",    "proton-10.0",    isRecommended = false),
+    CompatLayer("Proton 9.0",     "proton-9.0",     isRecommended = true),  // default
+    CompatLayer("Proton 8.0",     "proton-8.0",     isRecommended = false),
+    CompatLayer("Proton 7.0",     "proton-7.0",     isRecommended = false),
+    CompatLayer("Wine-GE Latest", "wine-ge-latest", isRecommended = false),
+    CompatLayer("Wine 9.5 x64",   "wine9.5-x64-1",  isRecommended = false),
+    CompatLayer("Wine 8.0 x64",   "wine8.0-x64",    isRecommended = false),
+)
+```
+
+Show "RECOMMENDED" badge next to the auto-selected version.
+Show "INSTALLED" / "Download X MB" badge for each version.
+
+**Translation Params** — opens a sub-screen with:
+```
+DXVK Settings
+  Async Shader Compilation   [ON ●]
+  State Cache                [ON ●]
+  Compiler Threads           [────●──── 6]
+  VRAM Budget                [────●──── 4800 MB]
+  Present Mode               [MAILBOX ▼]
+
+VKD3D Settings
+  Worker Threads             [────●──── 4]
+  Shader Model               [6.5 ▼]
+  RT Extensions              [DISABLED ●]
+
+Wine Settings
+  ESYNC                      [ON ●]
+  FSYNC                      [ON ●]
+  Debug Output               [OFF ●]  ← always off in release
+  Extra Env Vars             [text field]
+```
+
+**GPU Driver picker** — bottom sheet:
+```kotlin
+val gpuDrivers = listOf(
+    GpuDriver("Stock Adreno",    "stock",           isDefault = false),
+    GpuDriver("Turnip 24.1",     "turnip-24.1",     isDefault = true,  isRecommended = true),
+    GpuDriver("Turnip 23.3",     "turnip-23.3",     isDefault = false),
+    GpuDriver("Turnip 23.1",     "turnip-23.1",     isDefault = false),
+)
+// Only show Turnip options if hardware.gpuVendor == GpuVendor.ADRENO
+// Show "Mali GPU — Turnip not supported" message for Mali devices
+```
+
+### Category: COMPONENT
+
+```
+┌─────────────────────────────────────────────────────┐
+│  INSTALLED COMPONENTS                               │
+│                                                     │
+│  Proton 10.0        1.8 GB    [Remove]  [✓]        │
+│  Proton 9.0         1.6 GB    [Remove]  [✓ Active] │
+│  Proton 8.0         1.5 GB    [Remove]             │
+│  Wine-GE Latest     850 MB    [Download]           │
+│  DXVK 2.4-async     12 MB     [✓]                 │
+│  VKD3D 2.12         8 MB      [✓]                 │
+│  D8VK 1.0           4 MB      [✓]                 │
+│  Turnip 24.1        45 MB     [✓]                 │
+│  Turnip 23.3        44 MB     [Remove]             │
+│  Box64 0.32         6 MB      [✓]                 │
+│                                                     │
+│  [+ Download More Components]                       │
+└─────────────────────────────────────────────────────┘
+```
+
+```kotlin
+@Composable
+fun ComponentItem(
+    name: String,
+    size: String,
+    isInstalled: Boolean,
+    isActive: Boolean,
+    onDownload: () -> Unit,
+    onRemove: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(name, style = PluviaTypography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = gnTextPrimary)
+                if (isActive) {
+                    Box(
+                        modifier = Modifier
+                            .background(gnAccentPrimary.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text("ACTIVE", style = PluviaTypography.labelSmall.copy(fontSize = 9.sp), color = gnAccentGlow)
+                    }
+                }
+            }
+            Text(size, style = PluviaTypography.bodySmall, color = gnTextTertiary)
+        }
+        if (isInstalled) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onRemove) {
+                    Text("Remove", color = gnStatusError, style = PluviaTypography.labelMedium)
+                }
+                Icon(Icons.Default.CheckCircle, null, tint = gnNeonTeal, modifier = Modifier.size(20.dp))
+            }
+        } else {
+            Button(
+                onClick = onDownload,
+                colors = ButtonDefaults.buttonColors(containerColor = gnBgElevated, contentColor = gnAccentPrimary),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.Download, null, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Download", style = PluviaTypography.labelMedium)
+            }
+        }
+    }
+}
+```
+
+### Category: CONTROLLER
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Connected Controller       Xbox One  ●             │
+├─────────────────────────────────────────────────────┤
+│  Controller Mapping         Default  →              │
+├─────────────────────────────────────────────────────┤
+│  Rumble                     [ON ●]                 │
+├─────────────────────────────────────────────────────┤
+│  Left Stick Deadzone        [──●──────] 15%        │
+├─────────────────────────────────────────────────────┤
+│  Right Stick Deadzone       [──●──────] 15%        │
+├─────────────────────────────────────────────────────┤
+│  Trigger Deadzone           [──●──────] 10%        │
+└─────────────────────────────────────────────────────┘
+```
+
+### Category: INPUT MAPPING
+
+Visual button mapping screen:
+```
+Show a gamepad diagram with buttons labeled.
+Each button is tappable — tap to reassign.
+Presets: Default / Xbox Layout / PlayStation Layout / Custom
+```
+
+### Category: TOUCH CONTROLS
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Show Touch Controls        [OFF ●]                │
+│  On-screen gamepad overlay                          │
+├─────────────────────────────────────────────────────┤
+│  Touch Control Layout       Default  →              │
+├─────────────────────────────────────────────────────┤
+│  Button Opacity             [────●──────] 70%      │
+├─────────────────────────────────────────────────────┤
+│  Button Size                [────●──────] Medium   │
+└─────────────────────────────────────────────────────┘
+```
+
+### Category: BACKUP / RESTORE
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Create Save Backup         →                       │
+│  Backup save files to device storage                │
+├─────────────────────────────────────────────────────┤
+│  Restore Save               →                       │
+│  Restore from a previous backup                     │
+├─────────────────────────────────────────────────────┤
+│  Export Wine Prefix         →                       │
+│  Export container for manual backup                 │
+├─────────────────────────────────────────────────────┤
+│  Reset Wine Prefix          →                       │
+│  ⚠ Destructive — wipes all game data               │
+│  Use if game is broken and needs fresh install      │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## PART 3 — INTELLIGENT RECOMMENDATION ENGINE
+
+### How it works
+
+When the settings screen opens, the engine:
+1. Reads hardware profile (cached from first launch)
+2. Reads ProtonDB tier for this game
+3. Checks KnownGameFixes for any hardcoded overrides
+4. Runs CompatibilityChecker for warnings/blockers
+5. Generates a recommended config
+6. Shows a "Recommended Settings" banner with one-tap apply
+
+### RecommendationBanner composable
+
+```kotlin
+@Composable
+fun RecommendationBanner(
+    recommendation: GameConfig,
+    onApply: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = gnAccentPrimary.copy(alpha = 0.08f)),
+        border = BorderStroke(1.dp, gnAccentPrimary.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+
+            // Header
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.AutoFixHigh, null, tint = gnAccentGlow, modifier = Modifier.size(18.dp))
+                    Text(
+                        "Recommended for your device",
+                        style = PluviaTypography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = gnAccentGlow
+                    )
+                }
+                IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.Close, null, tint = gnTextTertiary, modifier = Modifier.size(16.dp))
+                }
+            }
+
+            // Summary pills
+            Text(recommendation.notes, style = PluviaTypography.bodySmall, color = gnTextSecondary)
+
+            // Key settings preview
+            if (expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    RecommendationPill("Runtime", recommendation.protonVersion.displayName)
+                    RecommendationPill("DirectX", recommendation.dxVersion.name)
+                    RecommendationPill("Resolution", "${(recommendation.resolutionScale * 100).toInt()}%")
+                    RecommendationPill("FPS Cap", if (recommendation.fpsLimit == 0) "Uncapped" else "${recommendation.fpsLimit} FPS")
+                    RecommendationPill("VRAM", "${recommendation.dxvkDeviceLocalMemoryMiB} MB")
+                }
+            }
+
+            // Actions
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { expanded = !expanded },
+                    border = BorderStroke(1.dp, gnBorderCard),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = gnTextSecondary),
+                    modifier = Modifier.height(36.dp)
+                ) {
+                    Text(if (expanded) "Hide details" else "Show details", style = PluviaTypography.labelMedium)
+                }
+                Button(
+                    onClick = onApply,
+                    colors = ButtonDefaults.buttonColors(containerColor = gnAccentPrimary),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.height(36.dp)
+                ) {
+                    Icon(Icons.Default.AutoFixHigh, null, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Apply Recommended", style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.SemiBold))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RecommendationPill(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .background(gnBgElevated, RoundedCornerShape(6.dp))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(label, style = PluviaTypography.labelSmall, color = gnTextTertiary, modifier = Modifier.width(80.dp))
+        Text(value, style = PluviaTypography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = gnTextPrimary)
+    }
+}
+```
+
+---
+
+## PART 4 — CANNOT RUN SCREEN
+
+When CompatibilityChecker returns `canRun = false`, show this instead
+of the normal settings screen:
+
+```kotlin
+@Composable
+fun CannotRunScreen(
+    gameName: String,
+    blockers: List<CompatibilityChecker.CompatBlocker>,
+    onOpenSettings: () -> Unit,   // still allow opening settings to try anyway
+    onNavigateBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(gnBgDeepest)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Spacer(Modifier.height(32.dp))
+
+        // Icon
+        Box(
+            modifier = Modifier
+                .size(80.dp)
+                .background(gnStatusError.copy(alpha = 0.1f), CircleShape)
+                .border(1.dp, gnStatusError.copy(alpha = 0.3f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.VideogameAssetOff, null, tint = gnStatusError, modifier = Modifier.size(36.dp))
+        }
+
+        Text(
+            "Cannot Run $gameName",
+            style = PluviaTypography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+            color = gnTextPrimary,
+            textAlign = TextAlign.Center
+        )
+
+        Text(
+            "Your device doesn't meet the requirements to run this game.",
+            style = PluviaTypography.bodyMedium,
+            color = gnTextSecondary,
+            textAlign = TextAlign.Center
+        )
+
+        // Blocker list
+        blockers.forEach { blocker ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = gnStatusError.copy(alpha = 0.08f)),
+                border = BorderStroke(1.dp, gnStatusError.copy(alpha = 0.3f)),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(blocker.icon, null, tint = gnStatusError, modifier = Modifier.size(16.dp))
+                        Text(blocker.title, style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.SemiBold), color = gnStatusError)
+                    }
+                    Text(blocker.detail, style = PluviaTypography.bodySmall, color = gnTextSecondary)
+                    if (blocker.fixAction != null) {
+                        TextButton(onClick = { /* handle */ }) {
+                            Text(blocker.fixAction, color = gnAccentPrimary)
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.weight(1f))
+
+        // Still allow trying (for advanced users who know what they're doing)
+        OutlinedButton(
+            onClick = onOpenSettings,
+            border = BorderStroke(1.dp, gnBorderCard),
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = gnTextSecondary)
+        ) {
+            Icon(Icons.Default.Settings, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Open Settings Anyway", style = PluviaTypography.labelLarge)
+        }
+
+        Button(
+            onClick = onNavigateBack,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = gnBgElevated, contentColor = gnTextPrimary),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Text("Go Back", style = PluviaTypography.labelLarge)
+        }
+    }
+}
+```
+
+---
+
+## PART 5 — SETTINGS SCREEN FULL IMPLEMENTATION
+
+```kotlin
+@Composable
+fun GameSettingsScreen(
+    appId: Int,
+    gameName: String,
+    onLaunch: (GameConfig) -> Unit,
+    onNavigateBack: () -> Unit,
+    viewModel: GameSettingsViewModel = hiltViewModel()
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    val selectedCategory by viewModel.selectedCategory.collectAsState()
+    val config by viewModel.config.collectAsState()
+    val compatResult by viewModel.compatResult.collectAsState()
+    val recommendation by viewModel.recommendation.collectAsState()
+    val showRecommendation by viewModel.showRecommendation.collectAsState()
+
+    LaunchedEffect(appId) { viewModel.load(appId) }
+
+    // Show cannot-run screen if hard blockers exist
+    if (compatResult?.canRun == false) {
+        CannotRunScreen(
+            gameName = gameName,
+            blockers = compatResult!!.blockers,
+            onOpenSettings = { viewModel.overrideCannotRun() },
+            onNavigateBack = onNavigateBack
+        )
+        return
+    }
+
+    val categories = listOf(
+        SettingsCategory.GENERAL,
+        SettingsCategory.COMPATIBILITY,
+        SettingsCategory.COMPONENT,
+        SettingsCategory.BACKUP_RESTORE,
+        SettingsCategory.CONTROLLER,
+        SettingsCategory.INPUT_MAPPING,
+        SettingsCategory.TOUCH_CONTROLS
+    )
+
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    Scaffold(
+        containerColor = gnBgDeepest,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text("Game Settings", style = PluviaTypography.titleMedium.copy(fontWeight = FontWeight.SemiBold), color = gnTextPrimary)
+                },
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.Default.ArrowBack, null, tint = gnTextPrimary)
+                    }
+                },
+                actions = {
+                    // FPS counter if game is running (matches GameHub's FPS:59.6 in top bar)
+                    if (uiState.currentFps > 0) {
+                        Text(
+                            "FPS: ${uiState.currentFps}",
+                            style = PluviaTypography.labelMedium,
+                            color = gnNeonTeal,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                    }
+                    IconButton(onClick = { viewModel.showHelp() }) {
+                        Icon(Icons.Default.HelpOutline, null, tint = gnTextSecondary)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = gnBgDeepest)
+            )
+        },
+        bottomBar = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(gnBgDeepest)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .navigationBarsPadding()
+            ) {
+                Button(
+                    onClick = { onLaunch(config) },
+                    enabled = compatResult?.canRun != false,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = gnAccentPrimary,
+                        disabledContainerColor = gnBgElevated
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (compatResult?.canRun == false) "Cannot Launch" else "Launch Game",
+                        style = PluviaTypography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+        }
+    ) { padding ->
+
+        if (isLandscape) {
+            // TWO PANE — sidebar + content
+            Row(
+                modifier = Modifier.fillMaxSize().padding(padding)
+            ) {
+                // Sidebar
+                Column(
+                    modifier = Modifier
+                        .width(200.dp)
+                        .fillMaxHeight()
+                        .background(gnBgSurface)
+                        .verticalScroll(rememberScrollState())
+                        .padding(vertical = 8.dp)
+                ) {
+                    categories.forEach { cat ->
+                        SettingsSidebarItem(
+                            category = cat,
+                            isSelected = selectedCategory == cat,
+                            onClick = { viewModel.selectCategory(cat) }
+                        )
+                    }
+                }
+
+                // Divider
+                Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(gnDivider))
+
+                // Content panel
+                Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    SettingsCategoryContent(
+                        category = selectedCategory,
+                        config = config,
+                        hardware = uiState.hardware,
+                        compatResult = compatResult,
+                        recommendation = recommendation,
+                        showRecommendation = showRecommendation,
+                        onUpdate = { viewModel.updateConfig(it) },
+                        onApplyRecommendation = { viewModel.applyRecommendation() },
+                        onDismissRecommendation = { viewModel.dismissRecommendation() }
+                    )
+                }
+            }
+        } else {
+            // SINGLE PANE — horizontal category chips + scrollable content
+            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                // Category chips
+                ScrollableTabRow(
+                    selectedTabIndex = categories.indexOf(selectedCategory),
+                    containerColor = gnBgSurface,
+                    contentColor = gnAccentPrimary,
+                    edgePadding = 16.dp,
+                    indicator = { tabPositions ->
+                        TabRowDefaults.Indicator(
+                            modifier = Modifier.tabIndicatorOffset(tabPositions[categories.indexOf(selectedCategory)]),
+                            color = gnAccentPrimary,
+                            height = 2.dp
+                        )
+                    },
+                    divider = { Divider(color = gnDivider) }
+                ) {
+                    categories.forEachIndexed { index, cat ->
+                        Tab(
+                            selected = selectedCategory == cat,
+                            onClick = { viewModel.selectCategory(cat) },
+                            text = {
+                                Text(
+                                    cat.displayName,
+                                    style = PluviaTypography.labelLarge,
+                                    color = if (selectedCategory == cat) gnAccentPrimary else gnTextSecondary
+                                )
+                            }
+                        )
+                    }
+                }
+
+                // Content
+                SettingsCategoryContent(
+                    category = selectedCategory,
+                    config = config,
+                    hardware = uiState.hardware,
+                    compatResult = compatResult,
+                    recommendation = recommendation,
+                    showRecommendation = showRecommendation,
+                    onUpdate = { viewModel.updateConfig(it) },
+                    onApplyRecommendation = { viewModel.applyRecommendation() },
+                    onDismissRecommendation = { viewModel.dismissRecommendation() }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsSidebarItem(
+    category: SettingsCategory,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (isSelected) gnAccentSubtle else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (isSelected) {
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .height(16.dp)
+                        .background(gnAccentPrimary, RoundedCornerShape(2.dp))
+                )
+            } else {
+                Spacer(Modifier.width(3.dp))
+            }
+            Text(
+                text = category.displayName,
+                style = PluviaTypography.bodyMedium.copy(
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                ),
+                color = if (isSelected) gnTextPrimary else gnTextSecondary
+            )
+        }
+    }
+}
+```
+
+---
+
+## PART 6 — SETTINGS CONTENT AREA
+
+```kotlin
+@Composable
+fun SettingsCategoryContent(
+    category: SettingsCategory,
+    config: GameConfig,
+    hardware: HardwareProfile?,
+    compatResult: CompatibilityChecker.CompatibilityResult?,
+    recommendation: GameConfig?,
+    showRecommendation: Boolean,
+    onUpdate: (GameConfig) -> Unit,
+    onApplyRecommendation: () -> Unit,
+    onDismissRecommendation: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Compatibility banners always at top
+        if (compatResult != null &&
+            (compatResult.warnings.isNotEmpty() || compatResult.blockers.isNotEmpty())) {
+            item { CompatibilityBanner(result = compatResult) }
+        }
+
+        // Recommendation banner (only on General and Compatibility tabs)
+        if (showRecommendation && recommendation != null &&
+            (category == SettingsCategory.GENERAL || category == SettingsCategory.COMPATIBILITY)) {
+            item {
+                RecommendationBanner(
+                    recommendation = recommendation,
+                    onApply = onApplyRecommendation,
+                    onDismiss = onDismissRecommendation
+                )
+            }
+        }
+
+        // Category-specific content
+        when (category) {
+            SettingsCategory.GENERAL       -> generalItems(config, onUpdate)
+            SettingsCategory.COMPATIBILITY -> compatibilityItems(config, hardware, onUpdate)
+            SettingsCategory.COMPONENT     -> componentItems()
+            SettingsCategory.BACKUP_RESTORE -> backupItems()
+            SettingsCategory.CONTROLLER    -> controllerItems(config, onUpdate)
+            SettingsCategory.INPUT_MAPPING -> inputMappingItems(config, onUpdate)
+            SettingsCategory.TOUCH_CONTROLS -> touchControlItems(config, onUpdate)
+        }
+    }
+}
+```
+
+---
+
+## DESIGN CONSTRAINTS
+
+- Two-pane sidebar on landscape/tablet exactly like GameHub screenshots
+- Sidebar width: 200dp, gnBgSurface background, gnDivider right border
+- Selected sidebar item: gnAccentSubtle background, 3dp gnAccentPrimary left accent bar
+- All settings rows: standard height 52-56dp, chevron icon on right
+- Current value shown right of chevron in gnTextSecondary
+- Section dividers between rows: gnDivider color, 0.5dp height
+- Bottom Launch button: always pinned above navigation bar, gnAccentPrimary fill
+- Cannot-run screen: shown INSTEAD of settings when hard blockers exist, with "Open Settings Anyway" escape hatch for advanced users
+- Recommendation banner: always at top of General and Compatibility panels, dismissable
+- FPS counter in top bar (gnNeonTeal) when game is running — matches GameHub UI
+- Compatibility Layer picker: show all available versions with RECOMMENDED badge on auto-selected
+- Component screen: show installed size, active badge, download/remove buttons
+- No new colors — only existing gn_* tokens
+- Fonts: GameNativeFontFamily (Outfit) via PluviaTypography everywhere
+- All hardware reads and config saves on Dispatchers.IO
+- Config persisted to GameProfileStore on every change (no explicit save button needed)

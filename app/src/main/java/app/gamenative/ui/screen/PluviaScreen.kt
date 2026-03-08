@@ -21,4 +21,9 @@ sealed class PluviaScreen(val route: String) {
         const val ARG_APP_ID = "appId"
         const val ARG_STEAM_ID = "steamId"
     }
+
+    data object GameConfig : PluviaScreen("game_config/{appId}") {
+        fun route(appId: String) = "game_config/$appId"
+        const val ARG_APP_ID = "appId"
+    }
 }
