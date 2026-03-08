@@ -74,14 +74,17 @@ import com.skydoves.landscapist.coil.CoilImage
 import com.skydoves.landscapist.ImageOptions
 
 /**
- * In-app friend profile: avatar, name, status, currently playing, games (recently played + by hours),
- * link to view/compare achievements, and chat with message history and send.
+ * In-app friend profile and/or chat.
+ * When [isProfileOnly] is true (friend tap from list): profile + games + Message button → [onNavigateToChat].
+ * When false (from Message button): profile + games + message list + input.
  */
 @Composable
 fun FriendDetailScreen(
     steamId: Long,
+    isProfileOnly: Boolean = false,
     onBack: () -> Unit,
     onNavigateRoute: (String) -> Unit = {},
+    onNavigateToChat: () -> Unit = {},
     viewModel: FriendDetailViewModel = hiltViewModel(),
 ) {
     val friends by SteamService.friendsList.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -157,7 +160,10 @@ fun FriendDetailScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 120.dp, max = 420.dp)
+                            .then(
+                                if (isProfileOnly) Modifier.weight(1f)
+                                else Modifier.heightIn(min = 120.dp, max = 420.dp)
+                            )
                             .verticalScroll(scrollState),
                     ) {
                         ProfileSection(
@@ -175,64 +181,78 @@ fun FriendDetailScreen(
                             friendSteamId = steamId,
                             onNavigateRoute = onNavigateRoute,
                         )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = stringResource(R.string.friend_message_section),
-                        style = PluviaTypography.labelMedium,
-                        color = gnTextTertiary,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(gnBgSurface)
-                            .border(1.dp, gnBorderCard, RoundedCornerShape(12.dp))
-                            .padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(messages.size, key = { messages[it].id }) { idx ->
-                            val msg = messages[idx]
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = if (msg.fromLocal) Arrangement.End else Arrangement.Start,
+                        if (isProfileOnly) {
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Button(
+                                onClick = onNavigateToChat,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .navigationBarsPadding()
+                                    .padding(bottom = 16.dp),
                             ) {
-                                Text(
-                                    text = msg.message,
-                                    style = PluviaTypography.bodyMedium,
-                                    color = if (msg.fromLocal) gnTextPrimary else gnTextSecondary,
-                                )
+                                Text(stringResource(R.string.friend_message_section))
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(bottom = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedTextField(
-                            value = messageText,
-                            onValueChange = { messageText = it },
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text(stringResource(R.string.friend_message_hint)) },
-                            singleLine = true,
+                    if (!isProfileOnly) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = stringResource(R.string.friend_message_section),
+                            style = PluviaTypography.labelMedium,
+                            color = gnTextTertiary,
                         )
-                        Spacer(modifier = Modifier.size(8.dp))
-                        Button(
-                            onClick = {
-                                val text = messageText.trim()
-                                if (text.isEmpty()) return@Button
-                                messageText = ""
-                                viewModel.sendMessage(steamId, text)
-                            },
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(gnBgSurface)
+                                .border(1.dp, gnBorderCard, RoundedCornerShape(12.dp))
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(stringResource(R.string.friend_send))
+                            items(messages.size, key = { messages[it].id }) { idx ->
+                                val msg = messages[idx]
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = if (msg.fromLocal) Arrangement.End else Arrangement.Start,
+                                ) {
+                                    Text(
+                                        text = msg.message,
+                                        style = PluviaTypography.bodyMedium,
+                                        color = if (msg.fromLocal) gnTextPrimary else gnTextSecondary,
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .navigationBarsPadding()
+                                .padding(bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            OutlinedTextField(
+                                value = messageText,
+                                onValueChange = { messageText = it },
+                                modifier = Modifier.weight(1f),
+                                placeholder = { Text(stringResource(R.string.friend_message_hint)) },
+                                singleLine = true,
+                            )
+                            Spacer(modifier = Modifier.size(8.dp))
+                            Button(
+                                onClick = {
+                                    val text = messageText.trim()
+                                    if (text.isEmpty()) return@Button
+                                    messageText = ""
+                                    viewModel.sendMessage(steamId, text)
+                                },
+                            ) {
+                                Text(stringResource(R.string.friend_send))
+                            }
                         }
                     }
                 }

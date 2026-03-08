@@ -8,6 +8,10 @@ sealed class PluviaScreen(val route: String) {
     data object Home : PluviaScreen("home")
     data object XServer : PluviaScreen("xserver")
     data object Settings : PluviaScreen("settings")
+    data object PlayerProfile : PluviaScreen("profile/{id}") {
+        fun route(id: Long) = "profile/$id"
+        const val ARG_ID = "id"
+    }
     data object Chat : PluviaScreen("chat/{id}") {
         fun route(id: Long) = "chat/$id"
         const val ARG_ID = "id"

@@ -1038,7 +1038,7 @@ fun PluviaMain(
                         PluviaApp.events.emit(AndroidEvent.EndProcess)
                     },
                     onChat = {
-                        navController.navigate(PluviaScreen.Chat.route(it))
+                        navController.navigate(PluviaScreen.PlayerProfile.route(it))
                     },
                     onNavigateRoute = {
                         navController.navigate(it)
@@ -1053,7 +1053,24 @@ fun PluviaMain(
                 )
             }
 
-            /** Chat (placeholder until Phase 2) **/
+            /** Player profile (friend tap from list): profile + games + Message button → chat **/
+            composable(
+                route = PluviaScreen.PlayerProfile.route,
+                arguments = listOf(
+                    navArgument(PluviaScreen.PlayerProfile.ARG_ID) { type = NavType.StringType },
+                ),
+            ) { backStackEntry ->
+                val id = backStackEntry.arguments?.getString(PluviaScreen.PlayerProfile.ARG_ID)?.toLongOrNull() ?: 0L
+                app.gamenative.ui.screen.chat.FriendDetailScreen(
+                    steamId = id,
+                    isProfileOnly = true,
+                    onBack = { navController.navigateUp() },
+                    onNavigateRoute = { navController.navigate(it) },
+                    onNavigateToChat = { navController.navigate(PluviaScreen.Chat.route(id)) },
+                )
+            }
+
+            /** Chat: messages + input; reached from profile screen Message button **/
             composable(
                 route = PluviaScreen.Chat.route,
                 arguments = listOf(
@@ -1063,8 +1080,10 @@ fun PluviaMain(
                 val id = backStackEntry.arguments?.getString(PluviaScreen.Chat.ARG_ID)?.toLongOrNull() ?: 0L
                 app.gamenative.ui.screen.chat.FriendDetailScreen(
                     steamId = id,
+                    isProfileOnly = false,
                     onBack = { navController.navigateUp() },
                     onNavigateRoute = { navController.navigate(it) },
+                    onNavigateToChat = { },
                 )
             }
 

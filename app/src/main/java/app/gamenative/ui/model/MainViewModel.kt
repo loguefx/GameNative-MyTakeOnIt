@@ -213,8 +213,12 @@ class MainViewModel @Inject constructor(
             PluviaScreen.Home.route -> PluviaScreen.Home
             PluviaScreen.XServer.route -> PluviaScreen.XServer
             PluviaScreen.Settings.route -> PluviaScreen.Settings
-            PluviaScreen.Chat.route -> PluviaScreen.Chat
-            else -> if (currentScreen?.startsWith("achievements") == true) PluviaScreen.Achievements else PluviaScreen.LoginUser
+            else -> when {
+                currentScreen?.startsWith("profile") == true -> PluviaScreen.PlayerProfile
+                currentScreen?.startsWith("chat") == true -> PluviaScreen.Chat
+                currentScreen?.startsWith("achievements") == true -> PluviaScreen.Achievements
+                else -> PluviaScreen.LoginUser
+            }
         }
 
         setCurrentScreen(screen)
