@@ -73,12 +73,8 @@ If you see "JAVA_HOME is set to an invalid directory" and the path ends with `ja
    ```
    Get your API key from: https://www.steamgriddb.com/profile/preferences
    If the API key is not configured, the app will log a message but continue to work normally without fetching images.
-5. **Steam Web API Key (Optional):** For Steam achievements (view and progress), add your Steam Web API key to `local.properties`:
-   ```
-   STEAM_WEB_API_KEY=your_steam_web_api_key
-   ```
-   Get your key from: https://steamcommunity.com/dev/apikey  
-   If not set, the Achievements screen will show empty until the key is configured.
+5. **Steam achievements:** When you are logged into Steam in the app, achievements are loaded automatically over the Steam connection (no API key required). To view them, open a Steam game in the library → menu → **Achievements**.  
+   **Optional:** If you want a fallback when the in-app Steam connection cannot be used, add a Steam Web API key to `local.properties`: `STEAM_WEB_API_KEY=your_key` (get one at https://steamcommunity.com/dev/apikey).
 
 **GitHub Actions (APK builds):** Workflows build a signed release APK on push to `main` and publish it to [Releases](https://github.com/loguefx/GameNative-MyTakeOnIt/releases/latest). For CI, configure repository **Secrets** (keystores, POSTHOG/SUPABASE, etc.). Bundletool is downloaded automatically. You can also download the APK from the run’s **Artifacts** or the nightly.link URL in the run summary.
 

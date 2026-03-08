@@ -3,6 +3,7 @@ package app.gamenative.data.repository
 import app.gamenative.BuildConfig
 import app.gamenative.data.SteamAchievement
 import app.gamenative.db.dao.CachedAchievementDao
+import app.gamenative.service.SteamService
 import javax.inject.Inject
 import javax.inject.Singleton
 import app.gamenative.db.entity.CachedAchievement
@@ -30,29 +31,51 @@ class AchievementRepository @Inject constructor(
         }
 
     suspend fun refreshIfNeeded(appId: Int, steamId: Long) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val existing = cachedAchievementDao.getOnce(appId, steamId)
+        val needRefresh = existing == null || (now - existing.schemaFetchedAt) > CACHE_VALID_MS ||
+            (now - existing.playerFetchedAt) > CACHE_VALID_MS
+        if (!needRefresh) return@withContext
+
+        // Prefer SteamKit (no API key): when logged in and requesting own stats
+        val loggedInSteamId = SteamService.userSteamId?.convertToUInt64()
+        if (loggedInSteamId != null && steamId == loggedInSteamId) {
+            val callback = SteamService.requestUserStats(appId)
+            val pair = callback?.let { SteamService.userStatsCallbackToCacheJson(it) }
+            if (pair != null) {
+                cachedAchievementDao.insert(
+                    CachedAchievement(
+                        appId = appId,
+                        steamId = steamId,
+                        schemaJson = pair.first,
+                        playerJson = pair.second,
+                        schemaFetchedAt = now,
+                        playerFetchedAt = now,
+                    ),
+                )
+                Timber.tag("Achievements").d("Refreshed achievements for appId=$appId via SteamKit")
+                return@withContext
+            }
+        }
+
+        // Fallback: Steam Web API (requires STEAM_WEB_API_KEY)
         if (BuildConfig.STEAM_WEB_API_KEY.isBlank() || BuildConfig.STEAM_WEB_API_KEY == "unset") {
-            Timber.tag("Achievements").d("STEAM_WEB_API_KEY not set, skipping achievement fetch")
+            Timber.tag("Achievements").d("SteamKit path failed or not own profile; STEAM_WEB_API_KEY not set")
             return@withContext
         }
         val key = BuildConfig.STEAM_WEB_API_KEY
-        val existing = cachedAchievementDao.getOnce(appId, steamId)
-        val now = System.currentTimeMillis()
-        val needSchema = existing == null || (now - existing.schemaFetchedAt) > CACHE_VALID_MS
-        val needPlayer = existing == null || (now - existing.playerFetchedAt) > CACHE_VALID_MS
-        if (!needSchema && !needPlayer) return@withContext
-
         var schemaJson = existing?.schemaJson
         var playerJson = existing?.playerJson
         var schemaFetchedAt = existing?.schemaFetchedAt ?: 0L
         var playerFetchedAt = existing?.playerFetchedAt ?: 0L
 
-        if (needSchema) {
+        if (existing == null || (now - existing.schemaFetchedAt) > CACHE_VALID_MS) {
             fetchSchema(key, appId)?.let { (json, _) ->
                 schemaJson = json
                 schemaFetchedAt = now
             }
         }
-        if (needPlayer) {
+        if (existing == null || (now - existing.playerFetchedAt) > CACHE_VALID_MS) {
             fetchPlayerAchievements(key, appId, steamId)?.let { (json, _) ->
                 playerJson = json
                 playerFetchedAt = now

@@ -84,6 +84,7 @@ import `in`.dragonbra.javasteam.steam.handlers.steamuser.SteamUser
 import `in`.dragonbra.javasteam.steam.handlers.steamuser.callback.LoggedOffCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamuser.callback.LoggedOnCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.SteamUserStats
+import `in`.dragonbra.javasteam.steam.handlers.steamuserstats.callback.UserStatsCallback
 import `in`.dragonbra.javasteam.steam.handlers.steamworkshop.SteamWorkshop
 import `in`.dragonbra.javasteam.steam.steamclient.SteamClient
 import `in`.dragonbra.javasteam.steam.steamclient.callbackmgr.CallbackManager
@@ -108,6 +109,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlin.io.path.pathString
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -214,7 +216,11 @@ class SteamService : Service(), IChallengeUrlChanged {
     private var _steamApps: SteamApps? = null
     private var _steamFriends: SteamFriends? = null
     private var _steamCloud: SteamCloud? = null
+    private var _steamUserStats: SteamUserStats? = null
     private var _steamFamilyGroups: FamilyGroups? = null
+
+    /** Pending user-stats requests: appId -> deferred result. Completed in onUserStatsReceived. */
+    private val pendingUserStatsRequests = ConcurrentHashMap<Int, CompletableDeferred<UserStatsCallback>>()
 
     private var _loginResult: LoginResult = LoginResult.Failed
 
@@ -448,6 +454,51 @@ class SteamService : Service(), IChallengeUrlChanged {
         suspend fun requestUserPersona() = withContext(Dispatchers.IO) {
             // in order to get user avatar url and other info
             userSteamId?.let { instance?._steamFriends?.requestFriendInfo(it) }
+        }
+
+        /** Request achievements/stats for the logged-in user via SteamKit (no Web API key). */
+        suspend fun requestUserStats(appId: Int): UserStatsCallback? = withContext(Dispatchers.IO) {
+            instance?.requestUserStatsInternal(appId)
+        }
+
+        /**
+         * Convert UserStatsCallback to (schemaJson, playerJson) for the achievement cache.
+         * Returns null if result is not OK or conversion fails.
+         */
+        fun userStatsCallbackToCacheJson(callback: UserStatsCallback): Pair<String, String>? {
+            if (callback.result != EResult.OK) return null
+            return try {
+                val expanded = callback.getExpandedAchievements("english")
+                val schemaArr = org.json.JSONArray()
+                val playerArr = org.json.JSONArray()
+                for (a in expanded) {
+                    schemaArr.put(
+                        org.json.JSONObject()
+                            .put("name", a.name ?: "")
+                            .put("displayName", a.displayName ?: "")
+                            .put("description", a.description ?: "")
+                            .put("icon", a.icon ?: "")
+                            .put("icongray", a.iconGray ?: ""),
+                    )
+                    playerArr.put(
+                        org.json.JSONObject()
+                            .put("apiname", a.name ?: "")
+                            .put("achieved", if (a.isUnlocked) 1 else 0)
+                            .put("unlocktime", a.unlockTimestamp.toLong()),
+                    )
+                }
+                val schemaJson = org.json.JSONObject()
+                    .put("game", org.json.JSONObject()
+                        .put("availableGameStats", org.json.JSONObject().put("achievements", schemaArr)))
+                    .toString()
+                val playerJson = org.json.JSONObject()
+                    .put("playerstats", org.json.JSONObject().put("achievements", playerArr))
+                    .toString()
+                Pair(schemaJson, playerJson)
+            } catch (e: Exception) {
+                Timber.tag("SteamUserStats").w(e, "userStatsCallbackToCacheJson failed")
+                null
+            }
         }
 
         suspend fun getSelfCurrentlyPlayingAppId(): Int? = withContext(Dispatchers.IO) {
@@ -2659,12 +2710,11 @@ class SteamService : Service(), IChallengeUrlChanged {
 
             // create our steam client instance
             steamClient = SteamClient(configuration).apply {
-                // remove callbacks we're not using.
+                // remove callbacks we're not using (keep SteamUserStats for achievements)
                 removeHandler(SteamGameServer::class.java)
                 removeHandler(SteamMasterServer::class.java)
                 removeHandler(SteamWorkshop::class.java)
                 removeHandler(SteamScreenshots::class.java)
-                removeHandler(SteamUserStats::class.java)
             }
 
             // create the callback manager which will route callbacks to function calls
@@ -2675,6 +2725,7 @@ class SteamService : Service(), IChallengeUrlChanged {
             _steamApps = steamClient!!.getHandler(SteamApps::class.java)
             _steamFriends = steamClient!!.getHandler(SteamFriends::class.java)
             _steamCloud = steamClient!!.getHandler(SteamCloud::class.java)
+            _steamUserStats = steamClient!!.getHandler(SteamUserStats::class.java)
 
             _unifiedFriends = SteamUnifiedFriends(this)
             _steamFamilyGroups = steamClient!!.getHandler<SteamUnifiedMessages>()!!.createService<FamilyGroups>()
@@ -2689,6 +2740,7 @@ class SteamService : Service(), IChallengeUrlChanged {
                     add(subscribe(PersonaStateCallback::class.java, ::onPersonaStateReceived))
                     add(subscribe(LicenseListCallback::class.java, ::onLicenseList))
                     add(subscribe(PlayingSessionStateCallback::class.java, ::onPlayingSessionState))
+                    add(subscribe(UserStatsCallback::class.java, ::onUserStatsReceived))
                 }
             }
 
@@ -3064,6 +3116,35 @@ class SteamService : Service(), IChallengeUrlChanged {
                     (without + updated).sortedBy { it.name.lowercase() }
                 }
             }
+        }
+    }
+
+    private fun onUserStatsReceived(callback: UserStatsCallback) {
+        val gameId = callback.gameId
+        val appId = (gameId and 0xFFFFFFFFL).toInt()
+        pendingUserStatsRequests.remove(appId)?.complete(callback)
+    }
+
+    /**
+     * Request user stats (including achievements) for the logged-in user and the given app.
+     * Uses SteamKit over the existing connection; no Web API key required.
+     * @return The callback result, or null if not connected or request failed.
+     */
+    internal suspend fun requestUserStatsInternal(appId: Int): UserStatsCallback? = withContext(Dispatchers.IO) {
+        val steamId = steamClient?.steamID ?: return@withContext null
+        val handler = _steamUserStats ?: return@withContext null
+        if (!steamId.isValid) return@withContext null
+        val deferred = CompletableDeferred<UserStatsCallback>()
+        pendingUserStatsRequests[appId] = deferred
+        try {
+            handler.getUserStats(appId, steamId)
+            withTimeout(15_000L) { deferred.await() }
+        } catch (e: Exception) {
+            Timber.tag("SteamUserStats").w(e, "requestUserStats appId=$appId failed")
+            pendingUserStatsRequests.remove(appId)
+            null
+        } finally {
+            pendingUserStatsRequests.remove(appId)
         }
     }
 
