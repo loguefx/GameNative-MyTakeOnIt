@@ -15,7 +15,20 @@ This fork builds on [Pluvia](https://github.com/oxters168/Pluvia) (Steam client 
 - **Custom games** — Add non-store titles to your library; optional [SteamGridDB](https://www.steamgriddb.com/) API key for automatic cover art.
 - **Release builds** — Signed release APKs are built on push to `main` and published to [Releases](https://github.com/loguefx/GameNative-MyTakeOnIt/releases/latest); the “Download the latest” link below always points to the newest build.
 
-*Add a screenshot of your device running the app here to show off the new UI (e.g. library, in-game, or settings).*
+**UI — how it looks (from our design rules)**  
+The app follows the GameNative design system in `.cursor/rules/` (see `gamenative-design-and-layout.mdc` for the full spec):
+
+| Element | Spec |
+|--------|------|
+| **Theme** | Dark only: deep navy backgrounds (`#09090F` → `#1A1A28`), no white or light gray. |
+| **Accent** | Steam blue `#1E9FFF` for buttons, links, active nav; no purple/Material default. |
+| **Typography** | **Outfit** (Google Fonts) everywhere — no Inter/Roboto. |
+| **Cards** | Flat cards with thin light stroke (`#FFFFFF18`), 12dp corners, no drop shadows. |
+| **Library** | Title "GameNative", search bar, filter chips (All / Installed / Recent / Favorites / Not Installed), grid or list toggle, sort. |
+| **Game cards** | 2:3 portrait cover art (600×900 capsule), gradient scrim at bottom, title + status chip + optional progress bar; favorite pill on the cover. |
+| **Status** | Teal = Installed, blue = Downloading, red = Error. |
+
+To add real screenshots: put images in `docs/screenshots/` (e.g. `library.png`, `list-view.png`) and add `![Library](docs/screenshots/library.png)` below.
 
 ---
 
