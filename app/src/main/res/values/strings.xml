@@ -110,6 +110,11 @@
     <string name="achievements_compare_legend">Friend vs you (✓ = unlocked)</string>
     <string name="achievements_compare_friend">Friend</string>
     <string name="achievements_compare_you">You</string>
+    <string name="achievements_filter_all">All</string>
+    <string name="achievements_filter_unlocked">Unlocked</string>
+    <string name="achievements_filter_locked">Locked</string>
+    <string name="achievements_empty_title">No achievements yet</string>
+    <string name="achievements_empty_subtitle">Sign in to Steam or add a Steam Web API key in settings to load achievements.</string>
     <string name="friend_hours">%s hrs</string>
 
     <!-- Custom Games -->
