@@ -10,6 +10,7 @@ import app.gamenative.data.FileChangeLists
 import app.gamenative.data.SteamApp
 import app.gamenative.data.SteamLicense
 import app.gamenative.data.CachedLicense
+import app.gamenative.data.FriendMessage
 import app.gamenative.data.DownloadingAppInfo
 import app.gamenative.data.EncryptedAppTicket
 import app.gamenative.data.GOGGame
@@ -33,6 +34,7 @@ import app.gamenative.db.dao.EncryptedAppTicketDao
 import app.gamenative.db.dao.GOGGameDao
 import app.gamenative.db.dao.EpicGameDao
 import app.gamenative.db.dao.CachedAchievementDao
+import app.gamenative.db.dao.ChatMessageDao
 
 const val DATABASE_NAME = "pluvia.db"
 
@@ -48,9 +50,10 @@ const val DATABASE_NAME = "pluvia.db"
         GOGGame::class,
         EpicGame::class,
         DownloadingAppInfo::class,
-        CachedAchievement::class
+        CachedAchievement::class,
+        FriendMessage::class
     ],
-    version = 13,
+    version = 14,
     // For db migration, visit https://developer.android.com/training/data-storage/room/migrating-db-versions for more information
     exportSchema = true, // It is better to handle db changes carefully, as GN is getting much more users.
     autoMigrations = [
@@ -94,4 +97,6 @@ abstract class PluviaDatabase : RoomDatabase() {
     abstract fun downloadingAppInfoDao(): DownloadingAppInfoDao
 
     abstract fun cachedAchievementDao(): CachedAchievementDao
+
+    abstract fun chatMessageDao(): ChatMessageDao
 }

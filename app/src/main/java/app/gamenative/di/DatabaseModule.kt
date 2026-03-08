@@ -10,6 +10,7 @@ import app.gamenative.db.dao.DownloadingAppInfoDao
 import app.gamenative.db.dao.CachedAchievementDao
 import app.gamenative.db.dao.EncryptedAppTicketDao
 import app.gamenative.db.migration.ROOM_MIGRATION_V7_to_V8
+import app.gamenative.db.migration.ROOM_MIGRATION_V13_to_V14
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -27,7 +28,7 @@ class DatabaseModule {
         // The db will be considered unstable during development.
         // Once stable we should add a (room) db migration
         return Room.databaseBuilder(context, PluviaDatabase::class.java, DATABASE_NAME)
-            .addMigrations(ROOM_MIGRATION_V7_to_V8)
+            .addMigrations(ROOM_MIGRATION_V7_to_V8, ROOM_MIGRATION_V13_to_V14)
             .fallbackToDestructiveMigration(true)
             .build()
     }
@@ -75,4 +76,8 @@ class DatabaseModule {
     @Provides
     @Singleton
     fun provideCachedAchievementDao(db: PluviaDatabase): CachedAchievementDao = db.cachedAchievementDao()
+
+    @Provides
+    @Singleton
+    fun provideChatMessageDao(db: PluviaDatabase): ChatMessageDao = db.chatMessageDao()
 }

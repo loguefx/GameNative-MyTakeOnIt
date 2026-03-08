@@ -11,12 +11,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
@@ -42,6 +45,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.gamenative.Constants
 import app.gamenative.R
+import app.gamenative.data.FriendMessage
 import app.gamenative.data.OwnedGames
 import app.gamenative.data.SteamFriend
 import app.gamenative.service.SteamService
@@ -80,10 +84,11 @@ fun FriendDetailScreen(
     val friends by SteamService.friendsList.collectAsStateWithLifecycle(initialValue = emptyList())
     val friend = friends.firstOrNull { it.steamId == steamId }
     val ownedGames by viewModel.ownedGames.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
-    val messages = remember { mutableStateListOf<Pair<Boolean, String>>() }
+    val messages by viewModel.messages(steamId).collectAsStateWithLifecycle(initialValue = emptyList())
     var messageText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(steamId) {
         if (friend == null) SteamService.requestFriendInfo(steamId)
@@ -142,13 +147,28 @@ fun FriendDetailScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp),
                 ) {
-                    ProfileSection(friend = friend)
-                    Spacer(modifier = Modifier.height(20.dp))
-                    GamesSection(
-                        games = ownedGames,
-                        friendSteamId = steamId,
-                        onNavigateRoute = onNavigateRoute,
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp)
+                            .verticalScroll(scrollState),
+                    ) {
+                        ProfileSection(
+                            friend = friend,
+                            onClick = {
+                                scope.launch {
+                                    val target = (scrollState.value + 220).coerceAtMost(scrollState.maxValue)
+                                    scrollState.animateScrollTo(target)
+                                }
+                            },
+                        )
+                        Spacer(modifier = Modifier.height(20.dp))
+                        GamesSection(
+                            games = ownedGames,
+                            friendSteamId = steamId,
+                            onNavigateRoute = onNavigateRoute,
+                        )
+                    }
                     Spacer(modifier = Modifier.height(20.dp))
                     Text(
                         text = stringResource(R.string.friend_message_section),
@@ -167,16 +187,16 @@ fun FriendDetailScreen(
                             .padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(messages.size, key = { it }) { idx ->
-                            val (fromMe, text) = messages[idx]
+                        items(messages.size, key = { messages[it].id }) { idx ->
+                            val msg = messages[idx]
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = if (fromMe) Arrangement.End else Arrangement.Start,
+                                horizontalArrangement = if (msg.fromLocal) Arrangement.End else Arrangement.Start,
                             ) {
                                 Text(
-                                    text = text,
+                                    text = msg.message,
                                     style = PluviaTypography.bodyMedium,
-                                    color = if (fromMe) gnTextPrimary else gnTextSecondary,
+                                    color = if (msg.fromLocal) gnTextPrimary else gnTextSecondary,
                                 )
                             }
                         }
@@ -199,10 +219,7 @@ fun FriendDetailScreen(
                                 val text = messageText.trim()
                                 if (text.isEmpty()) return@Button
                                 messageText = ""
-                                messages.add(true to text)
-                                scope.launch {
-                                    SteamService.sendFriendMessage(steamId, text)
-                                }
+                                viewModel.sendMessage(steamId, text)
                             },
                         ) {
                             Text(stringResource(R.string.friend_send))
@@ -215,7 +232,10 @@ fun FriendDetailScreen(
 }
 
 @Composable
-private fun ProfileSection(friend: SteamFriend) {
+private fun ProfileSection(
+    friend: SteamFriend,
+    onClick: () -> Unit = {},
+) {
     val statusText = when {
         friend.isPlayingGame -> friend.gameName.ifBlank { stringResource(R.string.in_game) }
         friend.isOnline -> stringResource(R.string.online)
@@ -239,6 +259,7 @@ private fun ProfileSection(friend: SteamFriend) {
             .clip(RoundedCornerShape(12.dp))
             .background(gnBgSurface)
             .border(1.dp, gnBorderCard, RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
             .padding(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

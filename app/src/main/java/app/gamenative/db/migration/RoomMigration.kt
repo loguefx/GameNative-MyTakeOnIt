@@ -14,3 +14,19 @@ internal val ROOM_MIGRATION_V7_to_V8 = object : Migration(7, 8) {
         connection.execSQL(DROP_TABLE + "steam_friend")
     }
 }
+
+private const val CREATE_CHAT_MESSAGE = """
+    CREATE TABLE IF NOT EXISTS chat_message (
+        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        steam_id_friend INTEGER NOT NULL,
+        from_local INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        timestamp INTEGER NOT NULL
+    )
+"""
+
+internal val ROOM_MIGRATION_V13_to_V14 = object : Migration(13, 14) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL(CREATE_CHAT_MESSAGE)
+    }
+}
