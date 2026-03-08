@@ -249,10 +249,13 @@ private fun GridCardContent(
             }
             return imageFile?.let { Uri.fromFile(it).toString() } ?: appInfo.capsuleImageUrl
         }
-        return when (appInfo.gameSource) {
-            GameSource.STEAM -> appInfo.capsuleImageUrl
+        val url = when (appInfo.gameSource) {
+            GameSource.STEAM -> appInfo.capsuleImageUrl.ifEmpty {
+                app.gamenative.Constants.Library.steamCapsuleUrl(appInfo.gameId)
+            }
             else -> appInfo.capsuleImageUrl
         }
+        return url
     }
     val capsuleUrl = remember(appInfo.appId, imageRefreshCounter) { findCapsuleUrl() }
     var imageUrl by remember(capsuleUrl) { mutableStateOf(capsuleUrl) }

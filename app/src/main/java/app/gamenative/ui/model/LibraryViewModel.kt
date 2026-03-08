@@ -355,7 +355,7 @@ class LibraryViewModel @Inject constructor(
                         name = item.name,
                         iconHash = item.clientIconHash,
                         capsuleImageUrl = item.getCapsuleUrl().ifEmpty {
-                            "https://cdn.akamai.steamstatic.com/steam/apps/${item.id}/library_600x900.jpg"
+                            app.gamenative.Constants.Library.steamCapsuleUrl(item.id)
                         },
                         headerImageUrl = item.headerUrl,
                         heroImageUrl = item.getHeroUrl(),

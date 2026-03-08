@@ -31,12 +31,16 @@ object Constants {
     object Library {
         const val ICON_URL = "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/"
         const val STORE_URL = "https://store.steampowered.com/app/"
+        /** Fallback capsule for grid when PICS library assets are missing. */
+        fun steamCapsuleUrl(appId: Int): String =
+            "https://cdn.akamai.steamstatic.com/steam/apps/$appId/library_600x900.jpg"
     }
 
     object Misc {
         const val KO_FI_LINK = "https://ko-fi.com/gamenative"
         const val GITHUB_LINK = "https://github.com/utkarshdalal/GameNative"
         const val PRIVACY_LINK = "https://github.com/utkarshdalal/GameNative/tree/master/PrivacyPolicy"
-        const val UPDATE_CHECK_URL = "https://api.gamenative.app/api/update-check"
+        /** Empty = disabled (fork does not use upstream update API). */
+        const val UPDATE_CHECK_URL = ""
     }
 }
