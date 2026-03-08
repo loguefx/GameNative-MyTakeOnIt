@@ -441,7 +441,7 @@ class SteamService : Service(), IChallengeUrlChanged {
         val friendsList: StateFlow<List<SteamFriend>>
             get() = instance?.friendsList ?: emptyFriendsList
         private val emptyFriendsList: StateFlow<List<SteamFriend>> =
-            MutableStateFlow(emptyList()).asStateFlow()
+            MutableStateFlow(emptyList<SteamFriend>()).asStateFlow()
 
         val isLoginInProgress: Boolean
             get() = instance?._loginResult == LoginResult.InProgress
