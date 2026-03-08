@@ -182,6 +182,15 @@ internal fun LibraryListPane(
         }
     }
 
+    // When loading completes, scroll to top so the user sees the start of the list
+    var wasLoading by remember { mutableStateOf(true) }
+    LaunchedEffect(state.isLoading, state.appInfoList.size) {
+        if (wasLoading && !state.isLoading && state.appInfoList.isNotEmpty()) {
+            listState.animateScrollToItem(0)
+        }
+        wasLoading = state.isLoading
+    }
+
     // Infinite scroll: load next page when scrolled to bottom
     LaunchedEffect(listState, state.appInfoList.size) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
