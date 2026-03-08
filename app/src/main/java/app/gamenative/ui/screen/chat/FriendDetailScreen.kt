@@ -138,13 +138,19 @@ fun FriendDetailScreen(
     onNavigateToChat: () -> Unit = {},
     viewModel: FriendDetailViewModel = hiltViewModel(),
 ) {
+    val messageFlow = remember(steamId) { viewModel.messages(steamId) }
     val friends by SteamService.friendsList.collectAsStateWithLifecycle(initialValue = emptyList())
     val friend = friends.firstOrNull { it.steamId == steamId }
+
+    if (steamId == 0L) {
+        LaunchedEffect(Unit) { onBack() }
+        return
+    }
     val ownedGames by viewModel.ownedGames.collectAsStateWithLifecycle()
     val sortedGames by viewModel.sortedGames.collectAsStateWithLifecycle()
     val isLoadingGames by viewModel.isLoadingGames.collectAsStateWithLifecycle()
     val selectedSort by viewModel.selectedSort.collectAsStateWithLifecycle()
-    val messages by viewModel.messages(steamId).collectAsStateWithLifecycle(initialValue = emptyList())
+    val messages by messageFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     var messageText by remember { mutableStateOf("") }
     var showMoreSheet by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
