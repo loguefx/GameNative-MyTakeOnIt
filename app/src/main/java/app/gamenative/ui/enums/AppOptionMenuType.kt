@@ -25,5 +25,6 @@ enum class AppOptionMenuType(val text: String) {
     TestGraphics("Test graphics"),
     ManageGameContent("Manage DLC"),
     LastRunDiagnostics("Last run diagnostics"),
-    GameSettings("Game settings");
+    GameSettings("Game settings"),
+    Achievements("Achievements");
 }

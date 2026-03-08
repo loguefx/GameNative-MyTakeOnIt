@@ -328,6 +328,21 @@ abstract class BaseAppScreen {
         )
     }
 
+    @Composable
+    protected open fun getAchievementsOption(
+        context: Context,
+        libraryItem: LibraryItem,
+        onNavigateRoute: (String) -> Unit,
+    ): AppMenuOption? {
+        if (libraryItem.gameSource != app.gamenative.data.GameSource.STEAM) return null
+        val appId = libraryItem.appId.removePrefix("STEAM_").substringBefore("(").trim()
+        if (appId.isBlank()) return null
+        return AppMenuOption(
+            optionType = AppOptionMenuType.Achievements,
+            onClick = { onNavigateRoute(app.gamenative.ui.screen.PluviaScreen.Achievements.route(appId)) },
+        )
+    }
+
     /**
      * Get source-specific menu options. Subclasses can override to add custom options.
      */
@@ -516,6 +531,7 @@ abstract class BaseAppScreen {
         exportFrontendLauncher: ActivityResultLauncher<String>,
         onShowLastRunDiagnostics: (() -> Unit)? = null,
         onShowGameSettings: (() -> Unit)? = null,
+        onNavigateRoute: (String) -> Unit = {},
     ): List<AppMenuOption> {
         val isInstalled = isInstalled(context, libraryItem)
         val menuOptions = mutableListOf<AppMenuOption>()
@@ -529,6 +545,7 @@ abstract class BaseAppScreen {
             getTestGraphicsOption(context, libraryItem, onTestGraphics)?.let { menuOptions.add(it) }
             getLastRunDiagnosticsOption(context, libraryItem, onShowLastRunDiagnostics)?.let { menuOptions.add(it) }
             getGameSettingsOption(context, libraryItem, onShowGameSettings)?.let { menuOptions.add(it) }
+            getAchievementsOption(context, libraryItem, onNavigateRoute)?.let { menuOptions.add(it) }
             getResetContainerOption(context, libraryItem)?.let { menuOptions.add(it) }
             getCreateShortcutOption(context, libraryItem)?.let { menuOptions.add(it) }
             getExportContainerOption(context, libraryItem, exportFrontendLauncher)?.let { menuOptions.add(it) }
@@ -566,6 +583,7 @@ abstract class BaseAppScreen {
         onClickPlay: (Boolean) -> Unit,
         onTestGraphics: () -> Unit,
         onBack: () -> Unit,
+        onNavigateRoute: (String) -> Unit = {},
     ) {
         val context = LocalContext.current
         val displayInfo = getGameDisplayInfo(context, libraryItem)
@@ -680,6 +698,7 @@ abstract class BaseAppScreen {
             exportFrontendLauncher,
             onShowLastRunDiagnostics = { showDiagnosticsDialog = true },
             onShowGameSettings = { showGameSettingsSheet = true },
+            onNavigateRoute = onNavigateRoute,
         )
 
         // Get download info based on game source for progress tracking

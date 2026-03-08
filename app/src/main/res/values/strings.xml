@@ -86,6 +86,12 @@
     <string name="destination_library">Library</string>
     <string name="destination_downloads">Downloads</string>
     <string name="destination_friends">Friends</string>
+    <string name="friends_count">%d friends</string>
+    <string name="online">Online</string>
+    <string name="offline">Offline</string>
+    <string name="in_game">In-game</string>
+    <string name="achievements_title">Achievements</string>
+    <string name="achievements_progress_suffix">achievements</string>
 
     <!-- Custom Games -->
     <string name="custom_games_title">Custom Games</string>

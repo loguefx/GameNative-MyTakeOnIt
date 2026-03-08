@@ -143,6 +143,7 @@ import `in`.dragonbra.javasteam.steam.steamclient.AsyncJobFailedException
 import `in`.dragonbra.javasteam.types.DepotManifest
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -268,6 +269,10 @@ class SteamService : Service(), IChallengeUrlChanged {
         SteamFriend(name = PrefManager.steamUserName, avatarHash = PrefManager.steamUserAvatarHash),
     )
     val localPersona = _localPersona.asStateFlow()
+
+    // Friends list for Friends screen; updated from SteamFriends and PersonaStateCallback.
+    private val _friendsList = MutableStateFlow<List<SteamFriend>>(emptyList())
+    val friendsList = _friendsList.asStateFlow()
 
     companion object {
         const val MAX_PICS_BUFFER = 256
@@ -425,6 +430,12 @@ class SteamService : Service(), IChallengeUrlChanged {
 
         val familyMembers: List<Int>
             get() = instance?.familyGroupMembers ?: emptyList()
+
+        /** Friends list for Friends screen; empty when not logged in. */
+        val friendsList: StateFlow<List<SteamFriend>>
+            get() = instance?.friendsList ?: emptyFriendsList
+        private val emptyFriendsList: StateFlow<List<SteamFriend>> =
+            MutableStateFlow(emptyList()).asStateFlow()
 
         val isLoginInProgress: Boolean
             get() = instance?._loginResult == LoginResult.InProgress
@@ -2897,6 +2908,9 @@ class SteamService : Service(), IChallengeUrlChanged {
                 // retrieve persona data of logged in user
                 scope.launch { requestUserPersona() }
 
+                // Request friend info for each friend so PersonaStateCallback populates friendsList
+                scope.launch { refreshFriendsList() }
+
                 // Request family share info if we have a familyGroupId.
                 if (callback.familyGroupId != 0L) {
                     scope.launch {
@@ -2948,6 +2962,7 @@ class SteamService : Service(), IChallengeUrlChanged {
 
     private fun onLoggedOff(callback: LoggedOffCallback) {
         Timber.i("Logged off of Steam: ${callback.result}")
+        _friendsList.value = emptyList()
 
         notificationHelper.notify("Disconnected...")
 
@@ -2972,6 +2987,26 @@ class SteamService : Service(), IChallengeUrlChanged {
         _isPlayingBlocked.value = callback.isPlayingBlocked
     }
 
+    /**
+     * Requests persona info for each friend so PersonaStateCallback can populate _friendsList.
+     * Call after logon; Steam sends the friends list asynchronously so we delay briefly.
+     */
+    private fun refreshFriendsList() {
+        scope.launch(Dispatchers.IO) {
+            delay(2000) // allow Steam to send friends list
+            val friends = _steamFriends ?: return@launch
+            val count = friends.getFriendCount()
+            if (count == 0) {
+                _friendsList.value = emptyList()
+                return@launch
+            }
+            for (i in 0 until count) {
+                val steamId = friends.getFriendByIndex(i)
+                if (steamId.isValid) friends.requestFriendInfo(steamId)
+            }
+        }
+    }
+
     @OptIn(ExperimentalStdlibApi::class)
     private fun onPersonaStateReceived(callback: PersonaStateCallback) {
         // Ignore accounts that arent individuals
@@ -2987,31 +3022,46 @@ class SteamService : Service(), IChallengeUrlChanged {
         // Timber.d("Persona state received: ${callback.name}")
 
         scope.launch {
-            db.withTransaction {
-                // Send off an event if we change states.
-                if (callback.friendId == steamClient!!.steamID) {
-                    Timber.d("Local persona state received: ${callback.playerName}")
+            val isLocal = callback.friendId == steamClient!!.steamID
+            val avatarHash = callback.avatarHash.toHexString()
+            val gameNameResolved = appDao.findApp(callback.gamePlayedAppId)?.name ?: callback.gameName
 
-                    val avatarHash = callback.avatarHash.toHexString()
-                    val playerName = callback.playerName
+            if (isLocal) {
+                db.withTransaction {
+                    Timber.d("Local persona state received: ${callback.playerName}")
 
                     // Update local state flow
                     _localPersona.update {
                         it.copy(
                             avatarHash = avatarHash,
-                            name = playerName,
+                            name = callback.playerName,
                             state = callback.personaState,
                             gameAppID = callback.gamePlayedAppId,
-                            gameName = appDao.findApp(callback.gamePlayedAppId)?.name ?: callback.gameName,
+                            gameName = gameNameResolved,
                         )
                     }
 
                     // Cache local persona
                     PrefManager.steamUserAvatarHash = avatarHash
-                    PrefManager.steamUserName = playerName
+                    PrefManager.steamUserName = callback.playerName
 
                     val event = SteamEvent.PersonaStateReceived(localPersona.value)
                     PluviaApp.events.emit(event)
+                }
+            } else {
+                // Update friends list: upsert this friend's persona
+                val friendId64 = callback.friendId.convertToUInt64()
+                val updated = SteamFriend(
+                    steamId = friendId64,
+                    avatarHash = avatarHash,
+                    gameAppID = callback.gamePlayedAppId,
+                    gameName = gameNameResolved,
+                    name = callback.playerName,
+                    state = callback.personaState,
+                )
+                _friendsList.update { list ->
+                    val without = list.filter { it.steamId != friendId64 }
+                    (without + updated).sortedBy { it.name.lowercase() }
                 }
             }
         }

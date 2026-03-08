@@ -19,6 +19,7 @@ secrets {
     ignoreList.add("POSTHOG_API_KEY")
     ignoreList.add("POSTHOG_HOST")
     ignoreList.add("STEAMGRIDDB_API_KEY")
+    ignoreList.add("STEAM_WEB_API_KEY")
     ignoreList.add("SUPABASE_URL")
     ignoreList.add("SUPABASE_KEY")
 }
@@ -70,16 +71,6 @@ android {
         versionName = "0.7.2"
 
         buildConfigField("boolean", "GOLD", "false")
-        // #region agent log
-        val debugLog = File(project.rootProject.layout.projectDirectory.asFile, "debug-6ad579.log")
-        debugLog.writeText("") // ensure file exists and is cleared at config start
-        debugLog.appendText("""{"sessionId":"6ad579","runId":"buildConfig","hypothesisId":"H0","location":"app/build.gradle.kts","message":"defaultConfig block entered","data":{"rootDir":"${project.rootProject.layout.projectDirectory.asFile.absolutePath}"},"timestamp":${System.currentTimeMillis()}}""" + "\n")
-        fun logBuildConfig(key: String, passedValue: String, hypothesisId: String) {
-            val preview = passedValue.take(80).replace("\\", "\\\\").replace("\"", "\\\"")
-            val entry = """{"sessionId":"6ad579","runId":"buildConfig","hypothesisId":"$hypothesisId","location":"app/build.gradle.kts","message":"buildConfigField value","data":{"key":"$key","passedLength":${passedValue.length},"passedPreview":"$preview","rawFromFindProperty":${project.findProperty(key) != null},"rawFromEnv":${System.getenv(key) != null}},"timestamp":${System.currentTimeMillis()}}""" + "\n"
-            debugLog.appendText(entry)
-        }
-        // #endregion
         fun secret(name: String): String {
             val raw = project.findProperty(name) as String? ?: System.getenv(name) ?: ""
             return when (name) {
@@ -100,29 +91,22 @@ android {
             return "\"$escaped\""
         }
         run {
-            val v = stringLiteral(secret("POSTHOG_API_KEY"))
-            logBuildConfig("POSTHOG_API_KEY", v, "H1")
-            buildConfigField("String", "POSTHOG_API_KEY", v)
+            buildConfigField("String", "POSTHOG_API_KEY", stringLiteral(secret("POSTHOG_API_KEY")))
         }
         run {
-            val v = stringLiteral(secret("POSTHOG_HOST"))
-            logBuildConfig("POSTHOG_HOST", v, "H1")
-            buildConfigField("String", "POSTHOG_HOST", v)
+            buildConfigField("String", "POSTHOG_HOST", stringLiteral(secret("POSTHOG_HOST")))
         }
         run {
-            val v = stringLiteral(secret("SUPABASE_URL"))
-            logBuildConfig("SUPABASE_URL", v, "H2")
-            buildConfigField("String", "SUPABASE_URL", v)
+            buildConfigField("String", "SUPABASE_URL", stringLiteral(secret("SUPABASE_URL")))
         }
         run {
-            val v = stringLiteral(secret("SUPABASE_KEY"))
-            logBuildConfig("SUPABASE_KEY", v, "H2")
-            buildConfigField("String", "SUPABASE_KEY", v)
+            buildConfigField("String", "SUPABASE_KEY", stringLiteral(secret("SUPABASE_KEY")))
         }
         run {
-            val v = stringLiteral(secret("STEAMGRIDDB_API_KEY"))
-            logBuildConfig("STEAMGRIDDB_API_KEY", v, "H1")
-            buildConfigField("String", "STEAMGRIDDB_API_KEY", v)
+            buildConfigField("String", "STEAMGRIDDB_API_KEY", stringLiteral(secret("STEAMGRIDDB_API_KEY")))
+        }
+        run {
+            buildConfigField("String", "STEAM_WEB_API_KEY", stringLiteral(secret("STEAM_WEB_API_KEY")))
         }
         val iconValue = "@mipmap/ic_launcher"
         val iconRoundValue = "@mipmap/ic_launcher_round"

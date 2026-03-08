@@ -68,6 +68,7 @@ import app.gamenative.ui.model.MainViewModel
 import app.gamenative.ui.screen.HomeScreen
 import app.gamenative.ui.screen.PluviaScreen
 import app.gamenative.ui.screen.login.UserLoginScreen
+import app.gamenative.ui.screen.achievements.AchievementsScreen
 import app.gamenative.ui.screen.settings.SettingsScreen
 import app.gamenative.ui.screen.xserver.XServerScreen
 import app.gamenative.ui.theme.PluviaTheme
@@ -1049,6 +1050,32 @@ fun PluviaMain(
                         navController.navigate(PluviaScreen.LoginUser.route)
                     },
                     isOffline = isOffline,
+                )
+            }
+
+            /** Chat (placeholder until Phase 2) **/
+            composable(
+                route = PluviaScreen.Chat.route,
+                arguments = listOf(
+                    navArgument(PluviaScreen.Chat.ARG_ID) { type = NavType.StringType },
+                ),
+            ) { backStackEntry ->
+                val id = backStackEntry.arguments?.getString(PluviaScreen.Chat.ARG_ID)?.toLongOrNull() ?: 0L
+                app.gamenative.ui.screen.chat.PlaceholderChatScreen(
+                    steamId = id,
+                    onBack = { navController.navigateUp() },
+                )
+            }
+
+            /** Achievements **/
+            composable(
+                route = PluviaScreen.Achievements.route,
+                arguments = listOf(
+                    navArgument(PluviaScreen.Achievements.ARG_APP_ID) { type = NavType.StringType },
+                ),
+            ) {
+                AchievementsScreen(
+                    onBack = { navController.navigateUp() },
                 )
             }
 

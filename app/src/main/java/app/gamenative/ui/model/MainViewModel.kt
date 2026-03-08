@@ -214,7 +214,7 @@ class MainViewModel @Inject constructor(
             PluviaScreen.XServer.route -> PluviaScreen.XServer
             PluviaScreen.Settings.route -> PluviaScreen.Settings
             PluviaScreen.Chat.route -> PluviaScreen.Chat
-            else -> PluviaScreen.LoginUser
+            else -> if (currentScreen?.startsWith("achievements") == true) PluviaScreen.Achievements else PluviaScreen.LoginUser
         }
 
         setCurrentScreen(screen)

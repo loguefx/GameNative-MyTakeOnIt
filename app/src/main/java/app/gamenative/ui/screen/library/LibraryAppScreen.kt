@@ -183,6 +183,7 @@ fun AppScreen(
     onClickPlay: (Boolean) -> Unit,
     onTestGraphics: () -> Unit,
     onBack: () -> Unit,
+    onNavigateRoute: (String) -> Unit = {},
 ) {
     // Get the appropriate screen model based on game source
     val screenModel = remember(libraryItem.gameSource) {
@@ -200,6 +201,7 @@ fun AppScreen(
         onClickPlay = onClickPlay,
         onTestGraphics = onTestGraphics,
         onBack = onBack,
+        onNavigateRoute = onNavigateRoute,
     )
 }
 

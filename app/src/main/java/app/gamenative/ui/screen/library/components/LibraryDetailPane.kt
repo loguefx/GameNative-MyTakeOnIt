@@ -39,6 +39,7 @@ internal fun LibraryDetailPane(
     onClickPlay: (Boolean) -> Unit,
     onTestGraphics: () -> Unit,
     onBack: () -> Unit,
+    onNavigateRoute: (String) -> Unit = {},
 ) {
     Surface {
         if (libraryItem == null) {
@@ -75,6 +76,7 @@ internal fun LibraryDetailPane(
                 onClickPlay = onClickPlay,
                 onTestGraphics = onTestGraphics,
                 onBack = onBack,
+                onNavigateRoute = onNavigateRoute,
             )
         }
     }

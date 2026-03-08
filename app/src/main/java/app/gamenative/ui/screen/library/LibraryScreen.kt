@@ -261,6 +261,7 @@ private fun LibraryScreenContent(
                         onTestGraphics(libraryItem.appId)
                     }
                 },
+                onNavigateRoute = onNavigateRoute,
             )
         }
 
