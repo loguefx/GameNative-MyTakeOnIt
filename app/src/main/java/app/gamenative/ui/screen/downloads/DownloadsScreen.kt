@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -30,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.unit.dp
 import app.gamenative.Constants
 import app.gamenative.R
@@ -127,7 +129,7 @@ private fun DownloadingGameRow(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = gnBgSurface),
-        border = androidx.compose.material3.BorderStroke(1.dp, gnBorderCard),
+        border = BorderStroke(1.dp, Brush.linearGradient(listOf(gnBorderCard, gnBorderCard))),
     ) {
         Row(
             modifier = Modifier.padding(12.dp),

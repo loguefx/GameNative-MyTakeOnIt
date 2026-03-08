@@ -559,7 +559,7 @@ object ContainerUtils {
         val bindingPaths = container.drivesIterator().map { it[1] }.toTypedArray()
         GuestProgramLauncherComponent.execInContainer(
             context,
-            proot32 = false,
+            false,
             bindingPaths,
             null,
             null,
@@ -577,7 +577,7 @@ object ContainerUtils {
         val bindingPaths = container.drivesIterator().map { it[1] }.toTypedArray()
         return GuestProgramLauncherComponent.execInContainerWithOutput(
             context,
-            proot32 = false,
+            false,
             bindingPaths,
             null as EnvVars?,
             null,

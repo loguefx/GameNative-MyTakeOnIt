@@ -16,7 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.SportsEsports
-import androidx.compose.material3.BorderStroke
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -56,7 +56,7 @@ fun GameInviteBanner(
             .padding(horizontal = 16.dp),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = gnBgSurface),
-        border = BorderStroke(1.dp, gnAccentPrimary.copy(alpha = 0.4f)),
+        border = BorderStroke(1.dp, Brush.linearGradient(listOf(gnAccentPrimary.copy(alpha = 0.4f), gnAccentPrimary.copy(alpha = 0.4f)))),
     ) {
         Column {
             Box(modifier = Modifier.fillMaxWidth().height(56.dp)) {
@@ -117,7 +117,7 @@ fun GameInviteBanner(
                 OutlinedButton(
                     onClick = onDecline,
                     modifier = Modifier.weight(1f).height(40.dp),
-                    border = BorderStroke(1.dp, gnBorderCard),
+                    border = BorderStroke(1.dp, Brush.linearGradient(listOf(gnBorderCard, gnBorderCard))),
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = gnTextSecondary),
                 ) {

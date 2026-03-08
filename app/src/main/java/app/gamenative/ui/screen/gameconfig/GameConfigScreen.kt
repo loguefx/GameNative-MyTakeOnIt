@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.round
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.gamenative.config.ConfigPreset
+import app.gamenative.ui.model.GameConfigViewModel
 import app.gamenative.config.DxVersion
 import app.gamenative.config.GameConfig
 import app.gamenative.config.ProtonVersion
@@ -359,7 +360,6 @@ fun GameConfigScreen(
             }
             item { Spacer(Modifier.height(8.dp)) }
         }
-    }
     }
 
     if (showProtonPicker && config != null) {

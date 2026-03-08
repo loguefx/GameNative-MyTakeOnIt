@@ -41,12 +41,13 @@ import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.SportsEsports
-import androidx.compose.material3.BorderStroke
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -67,9 +68,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -126,6 +127,7 @@ import com.skydoves.landscapist.ImageOptions
  * When [isProfileOnly] is true (friend tap from list): hero + actions + games → Message opens chat.
  * When false (from Message button): profile + games + message list + input.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FriendDetailScreen(
     steamId: Long,
@@ -611,7 +613,7 @@ private fun ProfileActionRow(
             onClick = onSendInvite,
             enabled = isLocalUserInGame,
             modifier = Modifier.weight(1f).height(44.dp),
-            border = BorderStroke(1.dp, if (isLocalUserInGame) gnAccentPrimary else gnTextTertiary),
+            border = BorderStroke(1.dp, Brush.linearGradient(listOf(if (isLocalUserInGame) gnAccentPrimary else gnTextTertiary, if (isLocalUserInGame) gnAccentPrimary else gnTextTertiary))),
             shape = RoundedCornerShape(10.dp),
             colors = ButtonDefaults.outlinedButtonColors(
                 contentColor = if (isLocalUserInGame) gnAccentPrimary else gnTextTertiary,
@@ -624,7 +626,7 @@ private fun ProfileActionRow(
         OutlinedIconButton(
             onClick = onMoreClick,
             modifier = Modifier.size(44.dp),
-            border = BorderStroke(1.dp, gnBorderCard),
+            border = BorderStroke(1.dp, Brush.linearGradient(listOf(gnBorderCard, gnBorderCard))),
             shape = RoundedCornerShape(10.dp),
             colors = IconButtonDefaults.outlinedIconButtonColors(contentColor = gnTextSecondary),
         ) {
@@ -654,7 +656,7 @@ private fun ProfileCurrentlyPlayingCard(
             .padding(horizontal = 16.dp),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = gnBgSurface),
-        border = BorderStroke(1.dp, gnBorderCard),
+        border = BorderStroke(1.dp, Brush.linearGradient(listOf(gnBorderCard, gnBorderCard))),
     ) {
         Column {
             Row(
@@ -786,8 +788,11 @@ private fun ProfileGameRowItem(
         shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(containerColor = gnBgSurface),
         border = BorderStroke(
-            width = 1.dp,
-            color = if (game.playtime2Weeks > 0) gnAccentPrimary.copy(alpha = 0.3f) else gnBorderCard,
+            1.dp,
+            Brush.linearGradient(listOf(
+                if (game.playtime2Weeks > 0) gnAccentPrimary.copy(alpha = 0.3f) else gnBorderCard,
+                if (game.playtime2Weeks > 0) gnAccentPrimary.copy(alpha = 0.3f) else gnBorderCard,
+            )),
         ),
     ) {
         Row(
