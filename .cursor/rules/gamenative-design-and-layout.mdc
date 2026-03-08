@@ -1,0 +1,284 @@
+---
+description: Color tokens, typography, theme, and XML layout specs for GameNative. Apply when editing res/ files, XML layouts, themes, or drawables.
+globs: ["**/res/**", "**/*.xml"]
+alwaysApply: false
+---
+
+# GameNative — Design System & Layouts
+
+## Part 1 — Color Tokens
+
+Write all of these into `app/src/main/res/values/colors.xml`.
+Replace ALL existing color references. Do not keep any default Material purple or gray values.
+
+### Background tier
+```
+gn_bg_deepest   = #09090F   — main window background (near-black)
+gn_bg_surface   = #12121C   — cards, bottom sheets
+gn_bg_elevated  = #1A1A28   — elevated panels, search bars
+gn_bg_overlay   = #22223A   — hover / selected / pressed states
+```
+
+### Accent (Steam blue)
+```
+gn_accent_primary = #1E9FFF  — CTAs, links, active nav icon
+gn_accent_glow    = #3DB8FF  — glow ring, shimmer highlight
+gn_accent_dim     = #1066A8  — pressed state of primary
+gn_accent_subtle  = #1E9FFF26  — 15% alpha, used for ripple and selected backgrounds
+```
+
+### Neon pops — use SPARINGLY, badges and status indicators only
+```
+gn_neon_teal   = #00E5C3  — "Installed" badge
+gn_neon_purple = #7C6EFA  — achievements, XP bar fill
+gn_neon_orange = #FF7B54  — warnings, sale price tags
+```
+
+### Typography
+```
+gn_text_primary   = #EEEEF5  — all readable body text
+gn_text_secondary = #8A8AA8  — subtitles, metadata, timestamps
+gn_text_tertiary  = #505068  — disabled, placeholder
+gn_text_on_accent = #FFFFFF  — text sitting on colored buttons or chips
+```
+
+### Status colors
+```
+gn_status_installed   = #00E5C3
+gn_status_downloading = #1E9FFF
+gn_status_error       = #FF4D6A
+gn_status_not_installed — do NOT define a color; hide the chip entirely
+                          (chip.visibility = GONE) when state is NOT_INSTALLED
+```
+
+### Structure
+```
+gn_divider     = #FFFFFF0F  — 6% white, hairline separators
+gn_border_card = #FFFFFF18  — 9% white, card outline stroke
+gn_scrim_art   = #A0000000  — 63% black overlay on hero art
+```
+
+### Legacy aliases — keep so existing references still compile
+```xml
+<color name="colorPrimary">@color/gn_accent_primary</color>
+<color name="colorPrimaryDark">@color/gn_bg_deepest</color>
+<color name="colorAccent">@color/gn_accent_glow</color>
+<color name="windowBackground">@color/gn_bg_deepest</color>
+```
+
+---
+
+## Part 2 — Typography (Outfit from Google Fonts)
+
+Add these font files to `app/src/main/res/font/`:
+```
+outfit_regular.ttf    weight 400
+outfit_medium.ttf     weight 500
+outfit_semibold.ttf   weight 600
+outfit_bold.ttf       weight 700
+```
+
+Create matching XML font descriptors in `res/font/` using Android's font resource
+file format so they are accessible as `@font/outfit_*`.
+
+Define these `TextAppearance` styles in `themes.xml`:
+
+| Style name | Font | Size | Color |
+|---|---|---|---|
+| `TextAppearance.GameNative.GameTitle` | outfit_semibold | 15sp | gn_text_primary |
+| `TextAppearance.GameNative.GameMeta` | outfit_regular | 12sp | gn_text_secondary |
+| `TextAppearance.GameNative.SectionHeader` | outfit_medium | 11sp | gn_text_tertiary, ALL_CAPS, letterSpacing=0.10 |
+
+---
+
+## Part 3 — Theme (res/values/themes.xml)
+
+Parent: `Theme.MaterialComponents.DayNight.NoActionBar`
+
+### Critical flags — all of these MUST be set
+
+```xml
+<item name="android:windowTranslucentStatus">false</item>
+<item name="android:windowTranslucentNavigation">false</item>
+<item name="android:windowDrawsSystemBarBackgrounds">true</item>
+<item name="android:statusBarColor">@android:color/transparent</item>
+<item name="android:navigationBarColor">@android:color/transparent</item>
+<item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+<item name="android:windowLightStatusBar">false</item>
+<item name="android:windowLightNavigationBar">false</item>
+```
+
+The last two are critical — they make status bar icons white on the dark background.
+`shortEdges` lets game art bleed under the display notch.
+
+### Color mappings
+```xml
+<item name="colorPrimary">@color/gn_accent_primary</item>
+<item name="colorSurface">@color/gn_bg_surface</item>
+<item name="colorSurfaceVariant">@color/gn_bg_elevated</item>
+<item name="elevationOverlayEnabled">true</item>
+<item name="elevationOverlayColor">@color/gn_accent_primary</item>
+<item name="colorControlHighlight">@color/gn_accent_subtle</item>
+<item name="rippleColor">@color/gn_accent_subtle</item>
+```
+
+### Component overrides (add inside the theme)
+
+**BottomNavigationView:**
+- `backgroundTint` = gn_bg_surface
+- `elevation` = 0dp
+- Active indicator: gn_accent_subtle background, pill shape (cornerSize=50%)
+
+**MaterialCardView (default):**
+- `cornerRadius` = 12dp
+- `strokeColor` = gn_border_card, `strokeWidth` = 1dp
+- `cardBackgroundColor` = gn_bg_surface
+- `cardElevation` = 0dp (use stroke, not shadow)
+
+**Chip filter style:**
+- `chipBackground` = selector (gn_bg_elevated default / gn_accent_subtle when checked)
+- `chipStrokeColor` = gn_border_card, `chipStrokeWidth` = 1dp
+- `cornerRadius` = 20dp
+
+**BottomSheetDialog:**
+- Rounded top corners = 20dp, bottom corners = 0dp
+- `background` = gn_bg_surface
+- `navigationBarColor` = gn_bg_surface (important for edge-to-edge)
+
+---
+
+## Part 4 — Layout: fragment_app_list.xml (Library screen)
+
+File: `app/src/main/res/layout/fragment_app_list.xml`
+This is the main game library screen. Map to the existing screen/fragment
+that lists the user's Steam games (e.g. `LibraryScreen`, `LibraryListPane`,
+or `AppListFragment` — use whatever name already exists in the codebase).
+
+Root: `CoordinatorLayout`, `fitsSystemWindows=true`, background=gn_bg_deepest
+
+```
+CoordinatorLayout
+│
+├── AppBarLayout (elevation=0dp, liftOnScroll=true, target=recyclerViewGames)
+│   │
+│   ├── ConstraintLayout (paddingH=16dp, paddingTop=8dp)
+│   │   ├── TextView  "GameNative"  (26sp, outfit_bold, top-left)
+│   │   ├── ImageButton  sort icon  (36dp pill bg, top-right)
+│   │   ├── ImageButton  grid/list toggle  (36dp pill bg, left of sort)
+│   │   └── SearchBar  (height=52dp, full width, below title)
+│   │
+│   └── HorizontalScrollView (no scrollbar, paddingH=12dp, paddingBottom=10dp)
+│       └── ChipGroup (singleSelection=true, selectionRequired=true)
+│           Chips: "All" (pre-checked), "Installed", "Recent",
+│                  "Favorites", "Not Installed"
+│
+├── RecyclerView  id=recyclerViewGames
+│   paddingStart/End=10dp, paddingBottom=80dp (clears bottom nav height)
+│   clipToPadding=false, scrollbars=none
+│   layout_behavior = appbar_scrolling_view_behavior
+│
+├── LinearLayout  id=layoutEmptyState  (visibility=gone, gravity=center)
+│   96dp icon + title text + subtitle text
+│
+└── ShimmerFrameLayout  id=shimmerLayout  (visibility=gone)
+    shimmer_base_color=gn_bg_elevated
+    shimmer_highlight_color=gn_bg_overlay
+    shimmer_auto_start=true
+```
+
+---
+
+## Part 5 — Layout: item_app_grid.xml (Game card)
+
+File: `app/src/main/res/layout/item_app_grid.xml`
+Used as the RecyclerView grid item.
+
+Root: `MaterialCardView` (cornerRadius=12dp, elevation=0dp, strokeColor=gn_border_card)
+
+```
+MaterialCardView
+└── ConstraintLayout
+    │
+    ├── ImageView  id=imgGameCover
+    │   width=0dp height=0dp scaleType=centerCrop
+    │   app:layout_constraintDimensionRatio="2:3"   ← CRITICAL — portrait capsule art
+    │   constrained start / end / top of parent
+    │
+    ├── View  id=scrimGradient  (drawable: gradient_card_scrim)
+    │   height=100dp, pinned to BOTTOM of imgGameCover
+    │
+    ├── TextView  id=tvGameTitle
+    │   anchored to bottom-left of cover, rightMargin clears btnFavorite
+    │   textAppearance=GameTitle, maxLines=2, ellipsize=end
+    │
+    ├── ImageButton  id=btnFavorite
+    │   32dp, background=bg_icon_pill, pinned top-right corner of cover
+    │   src: ic_heart_outline or ic_heart_filled depending on state
+    │
+    ├── Chip  id=chipStatus
+    │   anchored bottom-right of cover, height=24dp, cornerRadius=12dp
+    │   Color driven by InstallState — see adapter spec
+    │
+    ├── LinearProgressIndicator  id=progressDownload
+    │   height=3dp, visibility=GONE by default
+    │   indicatorColor=gn_accent_primary, trackColor=gn_bg_overlay
+    │   Shown only when installState == DOWNLOADING
+    │
+    └── TextView  id=tvGameMeta
+        Below the cover art, 8dp padding
+        textAppearance=GameMeta, single line, ellipsize=end
+        content: "12.4 GB  •  2.3 hrs"
+```
+
+---
+
+## Part 6 — Layout: item_app_list.xml (List view alternate)
+
+File: `app/src/main/res/layout/item_app_list.xml`
+Used when user switches to list view mode.
+
+Root: `MaterialCardView` — horizontal orientation
+
+```
+MaterialCardView (horizontal)
+├── ImageView  80×80dp  (Coil RoundedCornersTransformation(8f))
+│   src: iconImageUrl  (Steam 32×32 icon, NOT the 600×900 capsule)
+│
+└── ConstraintLayout (flex)
+    ├── TextView  id=tvGameTitle  (15sp, outfit_semibold)
+    ├── TextView  id=tvGameMeta   (12sp, gn_text_secondary)
+    ├── Chip  id=chipStatus       (same logic as grid card)
+    └── LinearProgressIndicator  id=progressDownload  (same as grid card)
+```
+
+---
+
+## Part 7 — Drawables to create
+
+**`res/drawable/gradient_card_scrim.xml`**
+```xml
+<shape>
+  <gradient
+    android:type="linear"
+    android:angle="90"
+    android:startColor="#00000000"
+    android:centerColor="#80000000"
+    android:endColor="#E0000000" />
+</shape>
+```
+This fades from transparent at the top to near-black at the bottom of the
+cover art so the title text is always readable regardless of the game art.
+
+**`res/drawable/bg_icon_pill.xml`**
+```xml
+<ripple android:color="@color/gn_accent_subtle">
+  <item android:id="@android:id/mask">
+    <shape android:shape="oval"><solid android:color="#FFFFFFFF"/></shape>
+  </item>
+  <item>
+    <shape android:shape="oval"><solid android:color="#66000000"/></shape>
+  </item>
+</ripple>
+```
+Used as the background for icon buttons overlaid on cover art (favorite, etc.).
+The semi-transparent dark pill keeps the icon readable on any art color.

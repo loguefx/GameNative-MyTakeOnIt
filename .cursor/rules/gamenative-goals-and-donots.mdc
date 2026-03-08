@@ -1,0 +1,65 @@
+---
+description: Core goals, hard constraints, and dependency list for GameNative. Applies to every file in the project.
+alwaysApply: true
+---
+
+# GameNative — Goals & Hard Constraints
+
+You are working on **loguefx/GameNative-MyTakeOnIt**, a fork of the GameNative
+unofficial Steam client for Android (Wine + DXVK/VKD3D inside a Linux container).
+
+There are two goals. Both must be met at the same time:
+
+1. **Look premium and immersive.** The app must feel like a serious gaming client,
+   not a generic Material app. Every screen should be dark, rich, and cohesive.
+
+2. **Run Steam games better than GameHub / stock GameNative.** Every config setting
+   in this project exists for a specific performance reason. Do not remove or
+   simplify them without understanding what they fix.
+
+## Table of Contents (full spec)
+
+- `gamenative-design-and-layout.mdc` — color tokens, fonts, theme, XML layouts
+- `gamenative-library-adapter.mdc` — AppListAdapter, DiffUtil, fragment wiring
+- `gamenative-steam-performance.mdc` — DXVK, VKD3D, Wine, Mesa, Box64, container
+
+---
+
+## Dependencies — add to app/build.gradle.kts
+
+```kotlin
+// Image loading — Kotlin-first, faster than Glide, supports Coil transforms
+implementation("io.coil-kt:coil:2.6.0")
+
+// Shimmer skeleton loading placeholder
+implementation("com.facebook.shimmer:shimmer:0.5.0")
+
+// Confirm these are present and at these minimum versions
+implementation("androidx.recyclerview:recyclerview:1.3.2")
+implementation("com.google.android.material:material:1.12.0")
+implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+```
+
+---
+
+## DO NOTs — never violate these rules
+
+**Visual / theme**
+- Do NOT use white, light gray, or any light background color anywhere in the app.
+- Do NOT use Inter, Roboto, or `sans-serif` system fonts — use Outfit only.
+- Do NOT use purple or violet as the primary accent color. That is GameHub's color. Use Steam blue `#1E9FFF`.
+- Do NOT enable Material3 DynamicColor / Monet color extraction. It overrides the carefully chosen palette.
+- Do NOT add card elevation drop shadows. Use `strokeColor` border (`#FFFFFF18`) for the flat dark aesthetic instead.
+- Do NOT fetch the 460×215 Steam header image for the 2:3 portrait cards — they stretch badly. Use 600×900 portrait capsule images.
+
+**Kotlin / adapter**
+- Do NOT call `notifyDataSetChanged()` anywhere. Always use `submitList()` through DiffUtil. The only acceptable exception is when the user switches between grid and list display modes.
+- Do NOT load images inside `onBindViewHolder` payload partial updates — partial rebinds must only update the specific field that changed (progress value, status chip color, favorite icon).
+
+**Performance configs**
+- Do NOT leave `WINEDEBUG` enabled in any build. Debug logging kills CPU performance.
+- Do NOT set `DXVK_HUD` in production. Only use it during local debug sessions.
+- Do NOT run `vm.max_map_count` sysctl on the Android host OS. It must run **inside the Linux container** only.
+- Do NOT remove the `ulimit -n 1048576` line before Wine launches. ESYNC requires it or Wine will crash.
+- Do NOT remove the `VKD3D_DISABLE_EXTENSIONS` ray tracing disablement. Adreno has no hardware RT; leaving it wastes CPU.
+- Do NOT simplify or shorten the DXVK/VKD3D/Wine explanatory comments. They exist so future contributors understand why each setting is present.

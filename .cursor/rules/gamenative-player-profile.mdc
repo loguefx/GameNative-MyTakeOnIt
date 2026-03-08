@@ -1,0 +1,411 @@
+---
+description: Player profile screen design and implementation spec. Full profile with presence, achievements, games library, playtime, and navigation to chat. Apply when editing friend profile, player profile, or user stats screens.
+globs: ["**/*Profile*", "**/*Friend*", "**/*Player*", "**/*UserStats*", "**/*Presence*"]
+alwaysApply: false
+---
+
+# GameNative — Player Profile Screen
+
+## Overview
+
+When a user taps a friend in the friends list, they go to the PlayerProfileScreen
+FIRST — not directly to chat. Chat is accessed from a button on the profile screen.
+
+Navigation flow:
+```
+FriendsListScreen
+    └── tap friend
+        └── PlayerProfileScreen
+            ├── [Message] button → ChatScreen
+            ├── [Achievements] tab → ProfileAchievementsTab
+            └── [Games] tab → ProfileGamesTab
+```
+
+All screens use existing gn_* tokens. No new colors. No new dependencies beyond
+what is already in the project (landscapist-coil, Room, SteamKit callbacks).
+
+---
+
+## Part 1 — PlayerProfileScreen.kt
+
+### Data to load
+
+Load all of this from existing SteamService / Steam Web API. Fetch on screen entry,
+show shimmer while loading, never show a blank screen.
+
+```kotlin
+data class PlayerProfile(
+    val steamId: String,
+    val displayName: String,
+    val avatarUrl: String,           // full 184px avatar from Steam CDN
+    val profileUrl: String,          // e.g. steamcommunity.com/id/username
+    val presenceState: PresenceState,// Online / Offline / InGame / Away
+    val currentGameName: String?,    // null if not in a game
+    val currentGameAppId: Int?,      // used to load game header art
+    val currentGameHeaderUrl: String?,// https://cdn.../{appId}/header.jpg
+    val statusMessage: String?,      // custom status set by the user
+    val memberSince: String?,        // "Member since June 2009"
+    val countryCode: String?,        // ISO country code for flag emoji
+    val level: Int,                  // Steam level (from GetSteamLevel)
+    val levelXpCurrent: Int,         // XP within current level
+    val levelXpRequired: Int,        // XP needed for next level
+    val totalAchievements: Int,      // across all games
+    val totalGames: Int,             // library size
+    val recentGames: List<RecentGame>// up to 3 most recent, for profile cards
+)
+
+data class RecentGame(
+    val appId: Int,
+    val name: String,
+    val headerUrl: String,
+    val playtime2Weeks: Int,         // minutes
+    val playtimeForever: Int         // minutes
+)
+```
+
+### Hero section (top of screen, NOT a card — full bleed)
+
+```kotlin
+// If the friend is currently in a game:
+//   Full-bleed game header art as background (AsyncImage fillMaxWidth, height=200dp)
+//   Heavy dark scrim over it: Brush.verticalGradient(
+//       listOf(Color.Transparent, gnBgDeepest.copy(alpha=0.6f), gnBgDeepest)
+//   )
+//   This makes the screen appear to "emerge" from the game art
+//
+// If NOT in a game:
+//   gnBgDeepest background with a subtle radial gradient glow centered behind avatar:
+//   Canvas drawCircle with gnAccentPrimary color, alpha=0.06f, radius=120dp
+//   This adds atmosphere without being distracting
+```
+
+### Avatar + identity block (overlaid on hero, bottom-aligned)
+
+```kotlin
+// Avatar: 80dp circle
+//   AsyncImage with circular clip
+//   Border: 3dp ring, color based on presence:
+//     Online  → gnNeonTeal
+//     InGame  → gnAccentPrimary (blue)
+//     Away    → gnNeonOrange
+//     Offline → gnTextTertiary
+//
+// Presence dot: 14dp circle bottom-right of avatar
+//   Same color as border, gnBgDeepest 2dp outer ring (so it pops on any background)
+//
+// Name: 22sp outfit_bold gnTextPrimary, below avatar
+//
+// Status line (one row, horizontal):
+//   If InGame:  gamepad icon 14dp gnAccentGlow + "Playing {currentGameName}"
+//               14sp outfit_medium gnAccentGlow
+//   If Online:  "Online" 13sp gnNeonTeal
+//   If Away:    "Away" 13sp gnNeonOrange
+//   If Offline: "Last online {timestamp}" 13sp gnTextTertiary
+//
+// Custom status message (if set):
+//   Italic 13sp gnTextSecondary, below status line
+//
+// Meta row (horizontal, spaced):
+//   🌍 {countryCode flag emoji}  Steam Level {level}  Member since {year}
+//   All in 12sp gnTextSecondary
+//   Steam level shown as a small badge: gnBgOverlay pill, gnNeonPurple text
+```
+
+### Steam Level XP bar (below identity, above action buttons)
+
+```kotlin
+// Only show if level data is available
+// Layout:
+//   Row: "Level {N}" gnTextSecondary 12sp LEFT   "{xpCurrent} / {xpRequired} XP" RIGHT
+//   LinearProgressIndicator below:
+//     height=4dp, cornerRadius=2dp
+//     trackColor = gnBgOverlay
+//     indicatorColor = Brush.horizontalGradient(gnNeonPurple, gnAccentPrimary)
+//     progress = levelXpCurrent.toFloat() / levelXpRequired.toFloat()
+```
+
+### Action buttons row
+
+```kotlin
+// Three buttons in a horizontal row, equal width, below the XP bar
+// 12dp spacing between them
+
+// [💬 Message]
+//   Filled button, gnAccentPrimary background, gnTextOnAccent text
+//   onClick → navigate to ChatScreen(steamId)
+//   This is the ONLY way to get to chat from the friends list
+
+// [🎮 Invite]
+//   Outlined button, gnAccentPrimary border+text
+//   onClick → send game invite via SteamFriends.InviteUserToGame
+//   Disabled and dimmed if no game is currently running
+
+// [• • •  More]
+//   Outlined button, gnBorderCard border, gnTextSecondary text
+//   onClick → ModalBottomSheet with options:
+//     "View on Steam"  → open steamcommunity.com profile URL in browser
+//     "Compare achievements" → navigate to CompareScreen(steamId)
+//     "Block" / "Unfriend" (destructive, gnStatusError text)
+```
+
+### Stats summary cards row
+
+```kotlin
+// Horizontal row of 3 equal stat cards, horizontalScroll if needed
+// Each card: gnBgSurface, 10dp corners, gnBorderCard 1dp stroke, padding 12dp
+
+// Card 1: GAMES
+//   Large number: totalGames  36sp outfit_bold gnTextPrimary
+//   Label: "GAMES OWNED"  11sp gnTextTertiary uppercase
+
+// Card 2: ACHIEVEMENTS
+//   Large number: totalAchievements  36sp outfit_bold gnTextPrimary
+//   Label: "ACHIEVEMENTS"  11sp gnTextTertiary uppercase
+
+// Card 3: RECENT ACTIVITY
+//   Value: sum of playtime2Weeks across recentGames, formatted as "X hrs"
+//   Label: "LAST 2 WEEKS"  11sp gnTextTertiary uppercase
+```
+
+### Currently playing card (only shown when InGame)
+
+```kotlin
+// Full-width card below stats row
+// gnBgSurface background, 12dp corners, gnBorderCard stroke
+// Left: pulsing green dot (animated alpha 1f→0.3f→1f, 1200ms loop) + "NOW PLAYING"
+//       11sp gnNeonTeal uppercase — right of dot
+// Game header art: AsyncImage fillMaxWidth height=80dp ContentScale.Crop
+//                  with 8dp bottom corners clip
+// Game name: 15sp outfit_semibold gnTextPrimary below art
+// "Started {time} ago": 12sp gnTextSecondary
+//
+// The pulsing dot animation:
+// val pulseAlpha by animateFloatAsState(
+//     targetValue = if (isPulsing) 1f else 0.3f,
+//     animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse)
+// )
+```
+
+### Recent games section (below currently playing or stats if not in game)
+
+```kotlin
+// Section header: "RECENTLY PLAYED"  11sp gnTextTertiary uppercase letterSpacing=0.1
+// 
+// Horizontal LazyRow of game cards, each 120dp wide:
+//   AsyncImage game header art, aspectRatio(460/215f), 8dp corners
+//   Game name below: 12sp outfit_medium gnTextPrimary maxLines=1
+//   Playtime: 11sp gnTextSecondary "X.X hrs on record"
+//   Recent: 11sp gnNeonTeal "X hrs past 2 weeks" (only if > 0)
+```
+
+### Tab row (Achievements | Games)
+
+```kotlin
+// Below recent games, sticky TabRow
+// gnBgSurface background, gnDivider bottom border
+// Selected tab: gnAccentPrimary indicator bar, gnAccentGlow text
+// Unselected tab: gnTextSecondary text
+// Two tabs: "Achievements" and "Games"
+// TabRow drives a HorizontalPager below it
+```
+
+---
+
+## Part 2 — ProfileAchievementsTab.kt
+
+This is the same achievement list from AchievementsScreen but scoped to this
+specific friend's steamId. Reuse AchievementRepository with the friend's steamId.
+
+Show exactly the same design as AchievementsScreen:
+- Progress header card with circular arc + gradient bar
+- Filter chips: All / Unlocked / Locked
+- Achievement cards: icon (color if unlocked, grayscale if locked), name,
+  description, unlock date, teal checkmark or gray lock icon
+- Left teal border on unlocked rows
+- Empty state if no data
+
+The only difference from the main AchievementsScreen:
+- No "Compare with me" button (user is already on a friend's profile)
+- Progress shows THEIR count, not yours
+
+---
+
+## Part 3 — ProfileGamesTab.kt
+
+Shows all games in the friend's library with playtime.
+
+### Data
+
+```kotlin
+data class ProfileGame(
+    val appId: Int,
+    val name: String,
+    val headerUrl: String,           // 460x215 header image
+    val capsuleUrl: String,          // 600x900 portrait (for grid view)
+    val playtimeForever: Int,        // total minutes
+    val playtime2Weeks: Int,         // recent minutes, 0 if none
+    val lastPlayed: Long?,           // Unix timestamp
+    val achievementsUnlocked: Int,
+    val achievementsTotal: Int
+)
+```
+
+Load from: `IPlayerService/GetOwnedGames/v1?include_appinfo=true&include_played_free_games=true`
+
+### Layout
+
+```kotlin
+// Sort controls row:
+//   Horizontal FilterChip row (same style as library)
+//   Chips: "Recent" (default), "Most Played", "A-Z", "Achievements"
+//
+// Game count header:
+//   "{N} games in library"  11sp gnTextTertiary uppercase
+
+// LazyColumn of game rows (list view, not grid — playtime needs horizontal space)
+// Each row: Card gnBgSurface 10dp corners gnBorderCard stroke
+//
+// Row layout:
+//   [HEADER ART 80x45dp 6dp corners] [TEXT BLOCK] [PLAYTIME RIGHT-ALIGNED]
+//
+//   TEXT BLOCK:
+//     Game name: 14sp outfit_semibold gnTextPrimary
+//     Last played: 12sp gnTextSecondary "Last played {date}" or "Never played"
+//     Achievement progress (if any):
+//       Small LinearProgressIndicator height=2dp gnAccentPrimary fill
+//       "{unlocked} / {total} achievements" 11sp gnTextTertiary
+//
+//   PLAYTIME (right side, min-width 64dp, right-aligned):
+//     If playtime2Weeks > 0:
+//       "{N} hrs" 14sp outfit_semibold gnAccentGlow  ← recent hours pop
+//       "past 2 wks" 10sp gnTextTertiary below
+//     Else:
+//       "{N} hrs" 14sp outfit_medium gnTextSecondary
+//       "total" 10sp gnTextTertiary below
+//     If 0 minutes total:
+//       "Never" 13sp gnTextTertiary
+//
+// Rows with recent activity (playtime2Weeks > 0):
+//   Left accent border 3dp gnAccentPrimary (same pattern as unlocked achievements)
+//   This visually pops recently played games without changing layout
+```
+
+---
+
+## Part 4 — Navigation wiring
+
+### From FriendsListScreen
+
+```kotlin
+// Current: tap → ChatScreen (WRONG)
+// New: tap → PlayerProfileScreen(steamId, displayName)
+//
+// In FriendsListScreen, change the onClick on each friend row:
+// onFriendClick = { friend ->
+//     navController.navigate("playerProfile/${friend.steamId}")
+// }
+```
+
+### Nav graph additions
+
+```kotlin
+// Add to your existing NavHost:
+composable(
+    route = "playerProfile/{steamId}",
+    arguments = listOf(navArgument("steamId") { type = NavType.StringType })
+) { backStackEntry ->
+    val steamId = backStackEntry.arguments?.getString("steamId") ?: return@composable
+    PlayerProfileScreen(
+        steamId = steamId,
+        onNavigateToChat = { navController.navigate("chat/$steamId") },
+        onNavigateBack = { navController.popBackStack() },
+        onNavigateToCompare = { navController.navigate("compareAchievements/$steamId") }
+    )
+}
+```
+
+### PlayerProfileScreen parameters
+
+```kotlin
+@Composable
+fun PlayerProfileScreen(
+    steamId: String,
+    onNavigateToChat: () -> Unit,
+    onNavigateBack: () -> Unit,
+    onNavigateToCompare: () -> Unit,
+    viewModel: PlayerProfileViewModel = hiltViewModel()
+)
+```
+
+---
+
+## Part 5 — PlayerProfileViewModel.kt
+
+```kotlin
+@HiltViewModel
+class PlayerProfileViewModel @Inject constructor(
+    private val steamService: SteamService,
+    private val achievementRepository: AchievementRepository,
+    private val gameProfileStore: GameProfileStore
+) : ViewModel() {
+
+    private val _profile = MutableStateFlow<ProfileUiState>(ProfileUiState.Loading)
+    val profile: StateFlow<ProfileUiState> = _profile
+
+    private val _games = MutableStateFlow<List<ProfileGame>>(emptyList())
+    val games: StateFlow<List<ProfileGame>> = _games
+
+    private val _achievements = MutableStateFlow<List<Achievement>>(emptyList())
+    val achievements: StateFlow<List<Achievement>> = _achievements
+
+    fun loadProfile(steamId: String) {
+        viewModelScope.launch {
+            try {
+                _profile.value = ProfileUiState.Loading
+                // Fetch in parallel
+                val profileDeferred = async { steamService.getPlayerSummary(steamId) }
+                val gamesDeferred   = async { steamService.getOwnedGames(steamId) }
+                val levelDeferred   = async { steamService.getSteamLevel(steamId) }
+
+                val profile = profileDeferred.await()
+                val games   = gamesDeferred.await()
+                val level   = levelDeferred.await()
+
+                _profile.value = ProfileUiState.Success(
+                    profile.copy(level = level.level, totalGames = games.size)
+                )
+                _games.value = games
+            } catch (e: Exception) {
+                _profile.value = ProfileUiState.Error(e.message ?: "Failed to load profile")
+            }
+        }
+    }
+}
+
+sealed class ProfileUiState {
+    object Loading : ProfileUiState()
+    data class Success(val profile: PlayerProfile) : ProfileUiState()
+    data class Error(val message: String) : ProfileUiState()
+}
+```
+
+---
+
+## Design constraints (same as all other screens)
+
+- Background: gnBgDeepest (#09090F) everywhere
+- Cards: gnBgSurface (#12121C), 10-12dp corners, gnBorderCard 1dp stroke, elevation=0
+- Fonts: GameNativeFontFamily (Outfit) via PluviaTypography — never system font
+- Do NOT define new colors — only existing gn_* tokens from Color.kt
+- No elevation shadows — stroke only
+- Avatar border color = presence state color (see above)
+- Currently playing indicator = pulsing gnNeonTeal dot, never static
+- Recent activity accent = gnAccentPrimary/gnAccentGlow
+- Unlocked/active accent = gnNeonTeal
+- Level/XP accent = gnNeonPurple
+- Image loading: landscapist-coil pattern from LibraryAppItem
+- Shimmer on all loading states using existing ShimmerFrameLayout pattern
+- LazyColumn key = { game.appId } and key = { achievement.apiName }
+  (stable keys, same pattern as library list)
+- All fetch operations: viewModelScope.launch + Dispatchers.IO for network/db,
+  collect on Dispatchers.Main for UI state updates

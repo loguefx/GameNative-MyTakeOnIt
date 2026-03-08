@@ -1,0 +1,213 @@
+Redesign the Achievements screen and the "Compare with me" screen completely.
+The current screens are plain flat lists with no visual hierarchy, no achievement icons,
+no unlock indicators, and no sense of progress. Replace them with premium dark gaming UI
+using the existing gn_* design tokens.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SCREEN 1 — ACHIEVEMENTS SCREEN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+File: wherever the current AchievementsScreen.kt lives
+
+## Progress Header (top of screen, above the list)
+
+Replace "0 / 0 ACHIEVEMENTS" plain text with a rich progress card:
+
+```kotlin
+// Full-width card, gnBgSurface background, 12dp corners, gnBorderCard stroke
+// Inside: two columns
+//   LEFT:  Large number "47" in 48sp outfit_bold gnTextPrimary
+//          "/" separator in 24sp gnTextSecondary
+//          "128" in 24sp gnTextSecondary
+//          Label "ACHIEVEMENTS" in 11sp gnTextTertiary uppercase letterSpacing=0.1
+//   RIGHT: Circular progress arc using Canvas or CircularProgressIndicator
+//          Outer ring: gnBorderCard (track)
+//          Fill arc: gnAccentPrimary (progress), strokeWidth=8dp
+//          Center text: "37%" in 14sp outfit_semibold gnAccentGlow
+//
+// Below the numbers: LinearProgressIndicator full width
+//   trackColor = gnBgOverlay
+//   indicatorColor = Brush.horizontalGradient(gnAccentPrimary → gnNeonTeal)
+//   height = 4dp, cornerRadius = 2dp
+//   progress = unlockedCount.toFloat() / totalCount.toFloat()
+```
+
+## Filter Row (below progress header)
+
+Horizontal scrollable FilterChip row with three chips:
+- "All"       — always shows all achievements
+- "Unlocked"  — shows only earned achievements
+- "Locked"    — shows only unearned achievements
+
+Selected chip: gnAccentSubtle background, gnAccentGlow text
+Unselected chip: gnBgElevated background, gnTextSecondary text
+gnBorderCard stroke, 20dp corner radius
+
+## Achievement List Items
+
+Replace the plain flat rows with rich cards:
+
+```kotlin
+// Each achievement row is a Card:
+//   gnBgSurface background, 10dp corners, gnBorderCard 1dp stroke, no elevation
+//   Height: 72dp minimum
+//
+// Layout (horizontal):
+//
+//   [ICON 48dp] [TEXT BLOCK flex] [STATUS]
+//
+//   ICON:
+//     Box 48x48dp, 10dp corner radius
+//     If UNLOCKED: AsyncImage loading achievement icon URL, full color
+//     If LOCKED:   AsyncImage loading achievement icon URL + ColorFilter.colorMatrix
+//                  with a desaturate matrix (grayscale), alpha 0.35f
+//     Fallback placeholder: gnBgElevated box with a Trophy icon in gnTextTertiary
+//
+//   TEXT BLOCK:
+//     Title: 14sp outfit_semibold gnTextPrimary, maxLines=1 ellipsize
+//     Description: 12sp outfit_regular gnTextSecondary, maxLines=2 ellipsize
+//     If UNLOCKED: show unlock date below description in 11sp gnTextTertiary
+//                  e.g. "Unlocked Mar 2, 2024"
+//
+//   STATUS (right side, 24dp wide):
+//     If UNLOCKED: Icon(Icons.Filled.CheckCircle) tint=gnNeonTeal, size=20dp
+//     If LOCKED:   Icon(Icons.Outlined.Lock) tint=gnTextTertiary, size=18dp
+//
+// UNLOCKED rows: left border accent — draw a 3dp vertical bar on the left edge
+//                color = gnNeonTeal using Modifier.drawBehind or a Box with
+//                background = gnNeonTeal width=3dp fillMaxHeight
+// LOCKED rows: no left border
+```
+
+## Empty State
+
+Replace "No achievements loaded. Sign in to Steam or set a Steam Web API key in settings."
+plain text + Retry button with:
+
+```kotlin
+// Centered column:
+//   Canvas/Image: Trophy icon 80dp, tint gnTextTertiary, alpha 0.3f
+//   Spacing: 20dp
+//   Text: "No Achievements Found" 17sp outfit_medium gnTextSecondary
+//   Text: "Sign in to Steam or add a Web API key in Settings" 13sp gnTextTertiary
+//         centered, horizontal padding 40dp
+//   Spacing: 24dp
+//   Button: outlined style, gnAccentPrimary border+text, "Retry" label
+//           onClick = retry lambda
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SCREEN 2 — COMPARE WITH ME SCREEN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+File: wherever the current compare screen lives
+(Opened via the "Compare with me" button on the Achievements screen)
+
+## Header comparison card
+
+Full-width card at top, gnBgSurface, 12dp corners, gnBorderCard stroke:
+
+```kotlin
+// Three-column layout: [FRIEND SIDE] [VS DIVIDER] [YOU SIDE]
+//
+// Each side:
+//   AsyncImage avatar 44dp circle with 2dp border
+//     Friend side: gnTextSecondary border
+//     You side:    gnAccentPrimary border
+//   Name 13sp outfit_semibold gnTextPrimary below avatar
+//   Achievement count "47 / 128" 11sp gnTextSecondary
+//   Percentage "37%" 11sp gnNeonTeal (you) or gnTextSecondary (friend)
+//
+// Center VS divider:
+//   Circle 36dp gnBgOverlay background gnBorderCard border
+//   Text "VS" 11sp outfit_bold gnTextTertiary
+```
+
+## Progress comparison bars
+
+Below the header card, two stacked rows — one for friend, one for you:
+
+```kotlin
+// Label row: "FRIEND" left   "YOU" right  (11sp gnTextTertiary uppercase)
+// Then a dual-bar visual:
+//   Background track: full width, 6dp height, gnBgOverlay, cornerRadius 3dp
+//   Friend bar: left-to-right gnBgOverlay → gnTextSecondary, width=friendPct%
+//   Your bar:   left-to-right gnAccentPrimary → gnNeonTeal, width=yourPct%
+//   Both bars overlap on same track — you bar drawn on top
+//   Right-aligned percentage labels at end of each bar
+```
+
+## Achievement comparison list
+
+Each row shows one achievement with both friend and your status side by side:
+
+```kotlin
+// Row layout (replaces the plain flat rows with dashes):
+//   [ICON 40dp] [NAME flex] [FRIEND STATUS 32dp] [YOU STATUS 32dp]
+//
+//   ICON:
+//     40x40dp rounded 8dp
+//     Full color if either person has it, grayscale+dim if neither has it
+//
+//   NAME:
+//     Achievement name 13sp outfit_medium gnTextPrimary maxLines=1
+//     Global completion % below name: "23.4% of players" 11sp gnTextTertiary
+//       (from GetGlobalAchievementPercentagesForApp API if available)
+//
+//   FRIEND STATUS column (32dp):
+//     Unlocked: Icon(CheckCircle) gnNeonTeal 18dp
+//     Locked:   Icon(Remove) gnTextTertiary 16dp  (dash, but as an icon not text)
+//
+//   YOU STATUS column (32dp):
+//     Unlocked: Icon(CheckCircle) gnAccentGlow 18dp
+//     Locked:   Icon(Remove) gnTextTertiary 16dp
+//
+//   Column headers row at top (sticky if possible):
+//     "ACHIEVEMENT" left, "FRIEND" right-aligned over friend col,
+//     "YOU" right-aligned over you col
+//     All in 11sp gnTextTertiary uppercase
+//
+// Row background:
+//   If YOU have it but friend doesn't: subtle gnAccentSubtle left-side tint
+//     (Box background gnAccentPrimary alpha=0.04f)
+//   If neither has it: gnBgSurface
+//   If friend has it: no special treatment (focus is on the user's progress)
+```
+
+## Empty / loading states for compare screen
+
+```kotlin
+// Loading: show shimmer on the header card and first 5 rows
+//   (same ShimmerFrameLayout pattern used in LibraryListPane)
+//
+// Error / not signed in:
+//   Same empty state pattern as achievements screen
+//   Icon: People icon 80dp gnTextTertiary alpha=0.3f
+//   Text: "Select a friend to compare achievements"
+//   Subtext: "Sign in to Steam to enable comparisons"
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DESIGN CONSTRAINTS (do not deviate)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Background: gnBgDeepest (#09090F) on all screens
+- Cards: gnBgSurface (#12121C), 10-12dp corners, gnBorderCard 1dp stroke, elevation=0
+- All text: GameNativeFontFamily (Outfit) via PluviaTypography
+- Do NOT add new color values — only use existing gn_* tokens from Color.kt:
+    gnBgDeepest, gnBgSurface, gnBgElevated, gnBgOverlay
+    gnAccentPrimary, gnAccentGlow, gnAccentSubtle
+    gnNeonTeal, gnNeonPurple, gnNeonOrange
+    gnTextPrimary, gnTextSecondary, gnTextTertiary
+    gnStatusInstalled, gnStatusDownloading, gnStatusError
+    gnBorderCard, gnDivider
+- No elevation shadows anywhere — use gnBorderCard stroke instead
+- Unlocked achievement accent color = gnNeonTeal
+- Your progress accent = gnAccentPrimary / gnAccentGlow gradient
+- Friend progress = gnTextSecondary (neutral, not competing with your color)
+- Achievement icon loading: use existing landscapist-coil pattern from LibraryAppItem
+- Locked icon images: apply ColorMatrix desaturate + 0.35f alpha via Coil's ColorFilter
+- List spacing: 8dp between cards in LazyColumn
+- Horizontal padding on all screens: 16dp
+- Section label style: 11sp, gnTextTertiary, uppercase, letterSpacing=0.10em
+  (same as used in LibraryListPane section headers)

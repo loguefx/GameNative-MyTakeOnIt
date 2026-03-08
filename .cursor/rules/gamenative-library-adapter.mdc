@@ -1,0 +1,313 @@
+---
+description: AppListAdapter rebuild with DiffUtil and payload updates, AppInfo/InstallState model, and fragment wiring. Apply when editing Kotlin UI files, adapters, or library screen fragments.
+globs: ["**/ui/**/*.kt", "**/library/**/*.kt", "**/*Adapter*.kt", "**/*Fragment*.kt", "**/*Screen*.kt"]
+alwaysApply: false
+---
+
+# GameNative — Library Adapter & Fragment
+
+Map all type names to whatever already exists in the codebase.
+"AppListAdapter" may be your current adapter class name or a new one.
+"AppListFragment" / "LibraryScreen" / "LibraryListPane" — use the real name.
+
+---
+
+## Part 1 — Why the old adapter is slow
+
+The stock adapter calls `notifyDataSetChanged()` which causes RecyclerView to
+throw away and rebind every single card in the list — even if only one game's
+download progress ticked up by 1%. On a library of 200 games, that is 200
+image loads, 200 text redraws, and 200 chip color evaluations per second
+while a game is downloading. This causes visible jank.
+
+The fix is two-layered:
+- **DiffUtil** compares the old and new list and only calls `onBindViewHolder`
+  for the items that actually changed.
+- **Payload updates** let a changed item update only the specific view that
+  needs it (e.g. the progress bar) without re-loading the cover art via Coil.
+
+---
+
+## Part 2 — AppInfo data model
+
+Add any missing fields to your existing app/game data class.
+It must be a `data class` so `==` comparison works correctly with DiffUtil.
+
+```kotlin
+data class AppInfo(
+    val appId: Int,
+    val name: String,
+    val capsuleImageUrl: String?,      // 600×900 portrait — for grid cards
+    val iconImageUrl: String?,         // 32×32 icon — for list rows
+    val installState: InstallState,
+    val downloadProgress: Int,         // 0–100
+    val isFavorite: Boolean,
+    val sizeOnDisk: String?,           // e.g. "12.4 GB"
+    val lastPlayedFormatted: String?   // e.g. "Yesterday" or "2.3 hrs"
+)
+```
+
+The capsule image URL pattern:
+```
+https://cdn.akamai.steamstatic.com/steam/apps/{appId}/library_600x900.jpg
+```
+This is a different URL from the header image (`header.jpg`). The header is
+460×215 landscape and looks broken in a 2:3 portrait card. Always use the
+600×900 portrait capsule for grid cards.
+
+---
+
+## Part 3 — InstallState enum
+
+```kotlin
+enum class InstallState {
+    INSTALLED,
+    DOWNLOADING,
+    NOT_INSTALLED,
+    ERROR
+}
+```
+
+Status chip behavior per state:
+- `INSTALLED` → show chip, background = `gn_status_installed` (#00E5C3), text = "Installed"
+- `DOWNLOADING` → show chip, background = `gn_status_downloading` (#1E9FFF), text = "XX%"
+- `NOT_INSTALLED` → hide chip entirely (`chip.visibility = GONE`)
+- `ERROR` → show chip, background = `gn_status_error` (#FF4D6A), text = "Error"
+
+---
+
+## Part 4 — AppListAdapter
+
+Extend `ListAdapter<AppInfo, RecyclerView.ViewHolder>(AppDiffCallback())`
+NOT `RecyclerView.Adapter` directly.
+
+### Payload constants (private)
+```kotlin
+private const val PAYLOAD_PROGRESS = "progress"
+private const val PAYLOAD_STATUS   = "status"
+private const val PAYLOAD_FAVORITE = "favorite"
+```
+
+### DiffUtil.ItemCallback
+```kotlin
+private class AppDiffCallback : DiffUtil.ItemCallback<AppInfo>() {
+    override fun areItemsTheSame(old: AppInfo, new: AppInfo) =
+        old.appId == new.appId
+
+    override fun areContentsTheSame(old: AppInfo, new: AppInfo) =
+        old == new   // data class equality
+
+    override fun getChangePayload(old: AppInfo, new: AppInfo): Any? = when {
+        old.downloadProgress != new.downloadProgress ||
+        old.installState     != new.installState     -> PAYLOAD_PROGRESS
+        old.isFavorite       != new.isFavorite       -> PAYLOAD_FAVORITE
+        else -> null
+    }
+}
+```
+
+### View types
+```kotlin
+enum class DisplayMode { GRID, LIST }
+
+var displayMode: DisplayMode = DisplayMode.GRID
+    set(value) {
+        if (field != value) {
+            field = value
+            notifyDataSetChanged()  // acceptable: deliberate user action, not hot path
+        }
+    }
+
+override fun getItemViewType(position: Int) = when (displayMode) {
+    DisplayMode.GRID -> VIEW_TYPE_GRID   // 0
+    DisplayMode.LIST -> VIEW_TYPE_LIST   // 1
+}
+```
+
+### onBindViewHolder with payload handling
+```kotlin
+override fun onBindViewHolder(
+    holder: RecyclerView.ViewHolder,
+    position: Int,
+    payloads: MutableList<Any>
+) {
+    val app = getItem(position)
+    if (payloads.isEmpty()) {
+        // Full bind — runs on first appearance or full content change
+        when (holder) {
+            is GridViewHolder -> holder.bind(app)
+            is ListViewHolder -> holder.bind(app)
+        }
+        animateCard(holder.itemView, position)
+    } else {
+        // Partial bind — only update the field that changed
+        // This does NOT reload the cover image. Critical for download hot-path.
+        payloads.forEach { payload ->
+            when (payload) {
+                PAYLOAD_PROGRESS -> when (holder) {
+                    is GridViewHolder -> holder.updateProgress(app)
+                    is ListViewHolder -> holder.updateProgress(app)
+                }
+                PAYLOAD_FAVORITE -> (holder as? GridViewHolder)?.updateFavorite(app)
+            }
+        }
+    }
+}
+```
+
+### Cover art loading (Coil 2.x)
+```kotlin
+fun bind(app: AppInfo) {
+    b.tvGameTitle.text = app.name
+    b.tvGameMeta.text  = buildMetaString(app)
+
+    // Load 600x900 portrait capsule for grid cards
+    b.imgGameCover.load(app.capsuleImageUrl) {
+        crossfade(300)
+        placeholder(R.drawable.ic_placeholder_cover)
+        error(R.drawable.ic_placeholder_cover)
+        // Card clips corners via cornerRadius — no transform needed here
+    }
+
+    updateStatus(app)
+    updateProgress(app)
+    updateFavorite(app)
+}
+```
+
+For list view rows, load `app.iconImageUrl` with
+`transformations(RoundedCornersTransformation(8f))` instead.
+
+### Pop-in animation (first appearance only)
+```kotlin
+private val animatedPositions = HashSet<Int>()
+
+private fun animateCard(view: View, position: Int) {
+    if (animatedPositions.contains(position)) return
+    animatedPositions.add(position)
+
+    view.scaleX = 0.88f
+    view.scaleY = 0.88f
+    view.alpha  = 0f
+    view.animate()
+        .scaleX(1f).scaleY(1f).alpha(1f)
+        .setDuration(220)
+        .setStartDelay((position % 6 * 30).toLong())  // stagger within viewport
+        .setInterpolator(DecelerateInterpolator(1.6f))
+        .start()
+}
+```
+
+---
+
+## Part 5 — Fragment wiring
+
+In your library fragment (AppListFragment / LibraryScreen / LibraryListPane):
+
+```kotlin
+private val adapter = AppListAdapter(
+    onGameClick     = { game -> viewModel.launchGame(game) },
+    onGameLongClick = { game, anchor -> showGameContextMenu(game, anchor) },
+    onFavoriteClick = { game -> viewModel.toggleFavorite(game) }
+)
+
+binding.recyclerViewGames.apply {
+    layoutManager = GridLayoutManager(requireContext(), 2)
+    this.adapter  = this@LibraryFragment.adapter
+    setHasFixedSize(false)            // false: title rows vary in height
+    setItemViewCacheSize(20)
+    setItemPrefetchEnabled(true)
+    (layoutManager as GridLayoutManager).initialPrefetchItemCount = 6
+}
+```
+
+**Always use submitList — never notifyDataSetChanged:**
+```kotlin
+viewModel.filteredGames.observe(viewLifecycleOwner) { games ->
+    adapter.submitList(games)
+    binding.layoutEmptyState.isVisible = games.isEmpty()
+    binding.recyclerViewGames.isVisible = games.isNotEmpty()
+    binding.shimmerLayout.isVisible = false
+    binding.shimmerLayout.stopShimmer()
+}
+
+viewModel.isLoading.observe(viewLifecycleOwner) { loading ->
+    if (loading) {
+        binding.shimmerLayout.isVisible = true
+        binding.shimmerLayout.startShimmer()
+    }
+}
+```
+
+**Chip filter wiring:**
+```kotlin
+binding.chipGroupFilters.setOnCheckedStateChangeListener { _, checkedIds ->
+    viewModel.setFilter(when (checkedIds.firstOrNull()) {
+        R.id.chipInstalled    -> LibraryFilter.INSTALLED
+        R.id.chipRecent       -> LibraryFilter.RECENT
+        R.id.chipFavorites    -> LibraryFilter.FAVORITES
+        R.id.chipNotInstalled -> LibraryFilter.NOT_INSTALLED
+        else                  -> LibraryFilter.ALL
+    })
+}
+```
+
+**Grid/list view toggle:**
+```kotlin
+binding.btnViewToggle.setOnClickListener {
+    adapter.displayMode = when (adapter.displayMode) {
+        AppListAdapter.DisplayMode.GRID -> {
+            binding.recyclerViewGames.layoutManager = LinearLayoutManager(requireContext())
+            binding.btnViewToggle.setImageResource(R.drawable.ic_grid_view)
+            AppListAdapter.DisplayMode.LIST
+        }
+        AppListAdapter.DisplayMode.LIST -> {
+            binding.recyclerViewGames.layoutManager = GridLayoutManager(requireContext(), 2)
+            binding.btnViewToggle.setImageResource(R.drawable.ic_list_view)
+            AppListAdapter.DisplayMode.GRID
+        }
+    }
+}
+```
+
+**SteamGridDB — fetch 600×900 portrait art, not header:**
+```
+GET https://www.steamgriddb.com/api/v2/grids/steam/{appId}?dimensions=600x900&type=static
+Authorization: Bearer ${STEAMGRIDDB_API_KEY}
+```
+Cache to: `app_data/artwork/{appId}_capsule.jpg`
+
+Fall-back chain:
+1. SteamGridDB 600×900 portrait
+2. Steam CDN: `https://cdn.akamai.steamstatic.com/steam/apps/{appId}/library_600x900.jpg`
+3. Steam CDN header (`header.jpg`) letterboxed to fit 2:3 card
+4. `R.drawable.ic_placeholder_cover`
+
+---
+
+## Part 6 — RecyclerView pool sharing
+
+Share a `RecycledViewPool` between the library grid and any search results
+fragment so ViewHolders are not recreated when switching tabs:
+
+```kotlin
+val sharedPool = RecyclerView.RecycledViewPool().apply {
+    setMaxRecycledViews(VIEW_TYPE_GRID, 20)
+    setMaxRecycledViews(VIEW_TYPE_LIST, 20)
+}
+binding.recyclerViewGames.setRecycledViewPool(sharedPool)
+```
+
+---
+
+## Part 7 — Predictive back (Android 14+)
+
+Replace all `onBackPressed()` overrides with the modern callback:
+```kotlin
+requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner) {
+    // handle back navigation here
+}
+```
+This enables Android 14's swipe-back preview animation (shows the previous
+screen behind the current one during the gesture). Makes navigation feel
+significantly more polished.

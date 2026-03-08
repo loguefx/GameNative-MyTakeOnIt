@@ -1,0 +1,370 @@
+---
+description: Complete Steam game performance configuration — DXVK, VKD3D, Mesa/Turnip, Wine, Box64, container init, Android wake locks. Apply when editing keyvalues/, env files, container startup scripts, or any game launch code.
+globs: ["**/keyvalues/**", "**/*.conf", "**/*.env", "**/ubuntufs/**", "**/launch/**", "**/Wine*", "**/wine*", "**/container*"]
+alwaysApply: false
+---
+
+# GameNative — Steam Performance Configuration
+
+The goal of every setting in this file is to make games run better than
+GameHub and stock GameNative on Snapdragon Android devices.
+
+The two biggest sources of poor game performance are:
+1. **Shader stutter** — the render thread freezes while compiling shaders.
+   Fixed by async compilation + persistent caches across all layers.
+2. **CPU overhead** — Wine debug logging, synchronization spinlocks, and
+   box64 JIT inefficiency waste CPU cycles that should go to the game.
+   Fixed by esync/fsync, silencing logs, and tuning the JIT.
+
+Do not remove any setting without reading its explanation. Each one exists
+to fix a real, measured bottleneck.
+
+---
+
+## 5A — DXVK Config (`keyvalues/dxvk.conf`)
+
+DXVK translates DirectX 9 / 10 / 11 calls to Vulkan.
+
+```ini
+# ── Async shader compilation ──────────────────────────────────────────────────
+# Without this: every new draw call with a new shader FREEZES the render thread
+# while the shader compiles synchronously. This causes the severe hitching
+# during the first minutes of gameplay that users blame on "the app being slow."
+# With this: shaders compile on background threads. The first draw of a new
+# shader may look wrong for one frame, but there is ZERO freeze.
+# This is the single biggest win for perceived smoothness.
+dxvk.enableAsync = True
+
+# ── Compile threads ───────────────────────────────────────────────────────────
+# Use (physical_cores - 1). Leave 1 core free for the render thread.
+# Snapdragon 8 Gen 1/2/3 = 8 cores → use 6.
+# Lower-end devices (SD 7xx, 6xx) → use 3.
+dxvk.numCompilerThreads = 6
+
+# ── Graphics Pipeline Library (VK_EXT_graphics_pipeline_library) ──────────────
+# Available in Mesa Turnip 23.x+. Splits pipeline creation into stages so the
+# "heavy" parts are pre-compiled before the game even needs them.
+# Reduces hitching on first-draw of each new material or visual effect.
+# If you see GPU crashes or black screens on a device, set this to False.
+dxvk.enableGraphicsPipelineLibrary = True
+
+# ── Persistent state cache ────────────────────────────────────────────────────
+# Without this: the game cold-compiles ALL shaders from scratch on every launch.
+# With this: compiled shaders survive app restarts. First play is slow,
+# every play after that is smooth. This is exactly what Steam Deck does.
+# 256 MB is enough for most titles. Increase to 512 for shader-heavy games.
+dxvk.enableStateCache = True
+dxvk.stateCacheMaxSize = 256
+
+# ── Memory budget ─────────────────────────────────────────────────────────────
+# Adreno shares system RAM as VRAM. Budget roughly 40% of total RAM.
+# 8 GB device → 3200 MB. 12 GB device → 4800 MB.
+# Too low causes constant texture streaming and eviction (stutters).
+# Too high causes Android OOM kills (crashes).
+dxvk.deviceLocalMemoryMiB = 3200
+dxvk.maxChunkSize = 256
+
+# ── Frame latency and presentation ───────────────────────────────────────────
+# maxFrameLatency = 1 means the GPU never buffers more than 1 frame ahead.
+# Result: lower input latency. If tearing appears, change presentMode to FIFO_RELAXED.
+dxvk.maxFrameLatency = 1
+dxvk.presentMode = MAILBOX
+
+# ── Vulkan barrier optimization ───────────────────────────────────────────────
+# Adreno is a tile-based GPU. Reducing redundant Vulkan barriers saves
+# real GPU time per frame, especially in geometry-heavy scenes.
+dxvk.trackPipelineLifetime = 0
+
+# ── No HUD, no logging in release builds ─────────────────────────────────────
+DXVK_HUD = none
+dxvk.logLevel = none
+```
+
+---
+
+## 5B — VKD3D-Proton (`keyvalues/vkd3d.env`)
+
+VKD3D-Proton translates DirectX 12 to Vulkan.
+Source or export these before launching Wine. DX12 games (e.g. Elden Ring,
+Cyberpunk 2077) need these in addition to the DXVK config above.
+
+```bash
+# ── Pipeline library cache ────────────────────────────────────────────────────
+# Splits DX12 pipeline compilation and caches the result between sessions.
+# Same concept as DXVK state cache but for the DX12 layer.
+# no_upload_hvv disables a slow upload path that wastes time on mobile VRAM.
+export VKD3D_CONFIG=pipeline_library_app_cache,no_upload_hvv
+
+# ── Shader cache directory ────────────────────────────────────────────────────
+# Must be in writable PERSISTENT app storage — NOT /tmp (wiped between runs).
+# The cache is megabytes in size. On first run it builds; every run after is fast.
+export VKD3D_SHADER_CACHE_PATH="${CONTAINER_DATA_DIR}/vkd3d_cache"
+
+# ── Disable hardware ray tracing extensions ───────────────────────────────────
+# Adreno 7xx does NOT have hardware RT acceleration. If VKD3D attempts to use
+# RT extensions it burns CPU overhead with zero benefit. Hard-disable both.
+export VKD3D_DISABLE_EXTENSIONS=VK_KHR_ray_tracing_pipeline,VK_KHR_ray_query
+
+# ── Worker threads ────────────────────────────────────────────────────────────
+# VKD3D uses these for async DX12 pipeline compilation.
+# 4 is the sweet spot on Snapdragon — enough parallelism without starving the game.
+export VKD3D_WORKER_THREAD_COUNT=4
+
+# ── No debug output ───────────────────────────────────────────────────────────
+export VKD3D_DEBUG=none
+export VKD3D_SHADER_DEBUG=none
+```
+
+---
+
+## 5C — Mesa / Turnip Driver
+
+Turnip is the open-source Adreno Vulkan driver. It is significantly faster
+than the stock Adreno driver for Wine/DXVK workloads because it exposes
+Vulkan extensions that the stock driver does not.
+
+Ship the latest community Turnip build `.so` in `assets/libs/` and extract
+it to app data on first launch, then set these variables before any Vulkan
+call (i.e. before Wine starts):
+
+```bash
+# ── Load community Turnip instead of stock Adreno driver ──────────────────────
+export MESA_LOADER_DRIVER_OVERRIDE=zink
+
+# ── Persistent shader disk cache (GPU ISA level) ──────────────────────────────
+# Mesa caches compiled SPIR-V → native Adreno ISA here.
+# Without this Mesa re-compiles shaders from SPIR-V on every launch,
+# which doubles the cold-start shader stutter.
+export MESA_SHADER_CACHE_DIR="${CONTAINER_DATA_DIR}/mesa_cache"
+export MESA_SHADER_CACHE_MAX_SIZE=512MB
+
+# ── Async compilation at the Mesa layer ──────────────────────────────────────
+# Works in tandem with DXVK async. Both the translation layer (DXVK) and the
+# driver layer (Mesa) compile asynchronously — two-layer stutter elimination.
+export mesa_glthread=true
+
+# ── Disable known slow paths in Turnip ───────────────────────────────────────
+export TU_DEBUG=noconform
+
+# ── No HUD or logging ────────────────────────────────────────────────────────
+export GALLIUM_HUD=none
+```
+
+---
+
+## 5D — Wine Optimizations
+
+Add these to the container startup script before launching the Wine process.
+
+```bash
+# ── ESYNC (eventfd-based synchronization) ─────────────────────────────────────
+# Wine's default synchronization uses CPU spin-wait loops, which waste entire
+# cores doing nothing but waiting. ESYNC replaces this with Linux eventfd,
+# which sleeps the thread until the event fires.
+# Result: dramatically lower CPU usage in multi-threaded games (RDR2, GTA V, etc.)
+# REQUIRES: ulimit -n 1048576 set below, or Wine will crash immediately.
+export WINEESYNC=1
+
+# ── FSYNC (futex-based sync — faster than ESYNC on modern kernels) ────────────
+# futex2 syscall is faster than eventfd on kernel 5.16+. If the kernel is older,
+# FSYNC falls back gracefully to ESYNC. Always set both — no downside.
+export WINEFSYNC=1
+
+# ── REQUIRED for ESYNC: raise open file descriptor limit ─────────────────────
+# ESYNC creates one eventfd per mutex/semaphore. Games like Elden Ring need
+# hundreds of thousands. Without this ulimit, Wine crashes on startup.
+ulimit -n 1048576
+
+# ── Disable Wine debug output ─────────────────────────────────────────────────
+# Wine debug logging is surprisingly expensive — it serializes strings and writes
+# to stderr on every API call. Disabling it saves 5–10% CPU in many games.
+# NEVER leave this at a non-silent level in production.
+export WINEDEBUG=-all
+
+# ── Command stream multi-threading ───────────────────────────────────────────
+# Offloads Wine's Vulkan command recording to a second thread.
+# Effectively free performance — always enable.
+export __GL_THREADED_OPTIMIZATIONS=1
+
+# ── Hide Wine from game DRM / anti-tamper checks ─────────────────────────────
+# Some games crash or refuse to start when they detect a Wine environment.
+export WINE_HIDE_NVIDIA_GPU=1
+export WINEDLLOVERRIDES="winevulkan.dll=n;d3d12.dll=n"
+
+# ── Frame rate cap ────────────────────────────────────────────────────────────
+# Prevents GPU running at 100% which causes thermal throttling that tanks
+# average FPS. Set to the device's display refresh rate.
+# 60 for most phones, 120 for flagship 120Hz displays.
+export DXVK_FRAME_RATE=60
+```
+
+---
+
+## 5E — Container Init (`ubuntufs` startup / proot-distro init)
+
+These must run inside the Linux container before any game process starts.
+Do NOT run them on the Android host OS.
+
+```bash
+# ── Virtual memory map count ──────────────────────────────────────────────────
+# Default Linux limit is 65,530 memory maps. Many games (and DXVK's shader cache)
+# need far more. Elden Ring alone can exceed 300,000 maps at runtime.
+# Setting this too low causes silent crashes or "cannot allocate memory" errors.
+sysctl -w vm.max_map_count=2147483642
+
+# ── Swappiness ────────────────────────────────────────────────────────────────
+# Lower value = OS keeps game data in RAM instead of swapping to flash storage.
+# Flash swap causes severe micro-stutter. 10 means "only swap under extreme pressure."
+sysctl -w vm.swappiness=10
+
+# ── Dirty page writeback ──────────────────────────────────────────────────────
+# Prevents the Linux kernel from stalling the game thread while writing dirty
+# pages back to storage. Low ratios = frequent small flushes instead of rare big ones.
+sysctl -w vm.dirty_background_ratio=5
+sysctl -w vm.dirty_ratio=10
+
+# ── CPU performance governor ──────────────────────────────────────────────────
+# Forces all CPU cores to max clock. Without this, the governor ramps clocks UP
+# too slowly after a scene transition burst, causing visible micro-stutter.
+for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo performance > "$cpu" 2>/dev/null || true
+done
+
+# ── GPU performance mode (Adreno) ────────────────────────────────────────────
+# Forces Adreno to run at peak clock.
+# Works on rooted devices. On non-rooted, use Android's setSustainedPerformanceMode (see 5G).
+echo performance > /sys/class/kgsl/kgsl-3d0/devfreq/governor 2>/dev/null || true
+```
+
+---
+
+## 5F — Wine Registry Tweaks (per-game Wine prefix)
+
+Apply these via `regedit` into the game's Wine prefix. The container startup
+script should apply them automatically if the registry key does not already exist.
+
+```reg
+[HKEY_CURRENT_USER\Software\Wine\Direct3D]
+"MaxVersionGL"="opengl32"
+"VideoPciDeviceID"=dword:00001C82
+"VideoPciVendorID"=dword:000010DE
+
+[HKEY_CURRENT_USER\Software\Wine\DirectInput]
+"MouseWarpOverride"="force"
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\winebus]
+"Enable SDL"=dword:00000001
+"Enable Udev"=dword:00000001
+```
+
+For DX12 games specifically, use these DLL overrides to load the native
+VKD3D-Proton implementation instead of Wine's built-in one:
+```
+d3d12.dll=n,b    — native VKD3D-Proton d3d12, not Wine built-in
+dxgi.dll=n,b     — native DXGI layer
+nvapi.dll=       — disable NVAPI entirely (not present, wastes lookup time)
+```
+
+---
+
+## 5G — Android Wake Lock + Sustained Performance
+
+While a game is running, acquire these from Android Kotlin/Java code:
+
+```kotlin
+// Keep CPU alive and clocked during gameplay
+// Release this in onGameStopped() — failing to release drains battery
+val wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GameNative:GameRunning")
+wakeLock.acquire()
+
+// Keep WiFi connection alive — prevents mid-game disconnection
+val wifiLock = (getSystemService(WIFI_SERVICE) as WifiManager)
+    .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GameNative:GameWifi")
+wifiLock.acquire()
+
+// Request sustained performance mode — prevents thermal throttle
+// This tells Android to keep clocks stable rather than boost-and-drop
+if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+    window.setSustainedPerformanceMode(true)
+}
+```
+
+---
+
+## 5H — Box64 Tuning
+
+Box64 translates x86_64 game binaries to ARM64 via a JIT compiler ("Dynarec").
+Most Steam games running on GameNative go through Box64. These variables
+improve JIT throughput and correctness:
+
+```bash
+# ── Dynarec: larger translation blocks ───────────────────────────────────────
+# Translates bigger x86 chunks at once → fewer JIT recompile interrupts per second.
+export BOX64_DYNAREC_BIGBLOCK=1
+
+# ── Strong memory ordering ────────────────────────────────────────────────────
+# x86 has stricter memory ordering than ARM. Without this, some games crash or
+# produce wrong results due to race conditions in translated multi-threaded code.
+export BOX64_DYNAREC_STRONGMEM=1
+
+# ── x87 double precision ──────────────────────────────────────────────────────
+# Some games depend on x87 80-bit float precision for physics calculations.
+# Without this, floating point results differ between x86 and the Box64 translation,
+# causing physics glitches or incorrect game logic.
+export BOX64_DYNAREC_X87DOUBLE=1
+
+# ── Fast float rounding ───────────────────────────────────────────────────────
+# Small CPU win. Uses ARM native float rounding instead of emulating x86 modes.
+export BOX64_DYNAREC_FASTROUND=1
+
+# ── Silent logging ────────────────────────────────────────────────────────────
+# Box64 log output is expensive. 0 = completely silent. Never set above 0 in release.
+export BOX64_LOG=0
+
+# ── RAM-backed temp dir for JIT code cache ───────────────────────────────────
+# Box64 writes compiled ARM64 blobs here. tmpfs (RAM-backed) avoids flash I/O latency.
+export BOX64_TEMPDIR=/tmp/box64cache
+```
+
+---
+
+## Part 6 — Additional Improvements
+
+### 6A — Shader pre-compilation progress UI
+
+The stock app has no feedback when shaders are compiling on first launch.
+Users see a frozen-looking screen and force-quit the app, which destroys the
+DXVK state cache and forces a cold-compile on the next launch.
+
+Add a persistent notification or non-dismissible in-game overlay showing:
+```
+"Building shaders… 247 / 2,483 — This only happens once"
+```
+with a `LinearProgressIndicator`. Read the compile count from DXVK log output
+or by monitoring the state cache file size growth. Dismiss automatically when
+compilation finishes. This one UX change has an outsized impact on cache hit rate.
+
+### 6B — Per-game profiles
+
+Different games need different configs. Create a `ProfileManager` that stores
+per-game overrides:
+
+```kotlin
+data class GameProfile(
+    val appId: Int,
+    val dxvkOverrides: Map<String, String>,
+    val envVarOverrides: Map<String, String>,
+    val winePrefixPath: String
+)
+```
+
+Write to: `keyvalues/profiles/{appId}.conf`
+
+Expose a "Game Settings" bottom sheet (long-press → context menu → Settings)
+with controls for the most impactful per-game options:
+- Resolution scale: 0.5x / 0.75x / 1.0x / 1.25x
+- Async shaders: toggle
+- VSync: toggle  
+- Frame rate cap: 30 / 45 / 60 / 90 / 120 / uncapped
+- DX version override: force DX9 / DX10 / DX11 / DX12 / auto
