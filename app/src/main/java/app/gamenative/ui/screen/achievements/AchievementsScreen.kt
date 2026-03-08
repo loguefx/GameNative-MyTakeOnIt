@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -41,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -539,12 +541,7 @@ private fun AchievementCard(
     val url = if (iconUrl.startsWith("http")) iconUrl else {
         "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/0/$iconUrl.jpg"
     }
-    val lockedColorFilter = ColorFilter.colorMatrix(
-        ColorMatrix().apply {
-            setToSaturation(0f)
-            setScale(1f, 1f, 1f, LOCKED_ICON_SATURATION_ALPHA)
-        }
-    )
+    val lockedColorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -568,6 +565,7 @@ private fun AchievementCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
+                .then(if (!achievement.unlocked) Modifier.alpha(LOCKED_ICON_SATURATION_ALPHA) else Modifier)
                 .clip(RoundedCornerShape(8.dp)),
         ) {
             CoilImage(
