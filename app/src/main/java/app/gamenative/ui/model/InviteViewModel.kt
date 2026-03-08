@@ -1,6 +1,7 @@
 package app.gamenative.ui.model
 
 import android.content.Context
+import androidx.lifecycle.ViewModel
 import app.gamenative.data.GameInvite
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -13,7 +14,7 @@ import javax.inject.Inject
 @HiltViewModel
 class InviteViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
-) {
+) : ViewModel() {
 
     private val _pendingInvites = MutableStateFlow<List<GameInvite>>(emptyList())
     val pendingInvites: StateFlow<List<GameInvite>> = _pendingInvites.asStateFlow()
