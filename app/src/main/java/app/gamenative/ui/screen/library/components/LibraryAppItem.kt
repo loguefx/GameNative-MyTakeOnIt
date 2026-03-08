@@ -203,7 +203,6 @@ internal fun AppItem(
                 }
             }
             }
-            }
 
             if (paneType == PaneType.LIST) {
                 GameInfoBlock(
