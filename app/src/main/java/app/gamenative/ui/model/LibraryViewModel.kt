@@ -354,7 +354,9 @@ class LibraryViewModel @Inject constructor(
                         appId = "${GameSource.STEAM.name}_${item.id}",
                         name = item.name,
                         iconHash = item.clientIconHash,
-                        capsuleImageUrl = item.getCapsuleUrl(),
+                        capsuleImageUrl = item.getCapsuleUrl().ifEmpty {
+                            "https://cdn.akamai.steamstatic.com/steam/apps/${item.id}/library_600x900.jpg"
+                        },
                         headerImageUrl = item.headerUrl,
                         heroImageUrl = item.getHeroUrl(),
                         isShared = (PrefManager.steamUserAccountId != 0 && !item.ownerAccountId.contains(PrefManager.steamUserAccountId)),
@@ -394,12 +396,14 @@ class LibraryViewModel @Inject constructor(
                 .toList()
 
             val gogEntries = filteredGOGGames.map { game ->
+                val coverUrl = game.imageUrl.ifEmpty { game.iconUrl }
                 LibraryEntry(
                     item = LibraryItem(
                         index = 0,
                         appId = "${GameSource.GOG.name}_${game.id}",
                         name = game.title,
-                        iconHash = game.imageUrl.ifEmpty { game.iconUrl },
+                        iconHash = coverUrl,
+                        capsuleImageUrl = coverUrl,
                         isShared = false,
                         gameSource = GameSource.GOG,
                     ),
@@ -433,6 +437,7 @@ class LibraryViewModel @Inject constructor(
                         appId = "EPIC_${game.id}",
                         name = game.title,
                         iconHash = game.artCover,
+                        capsuleImageUrl = game.artCover,
                         isShared = false,
                         gameSource = GameSource.EPIC,
                     ),
