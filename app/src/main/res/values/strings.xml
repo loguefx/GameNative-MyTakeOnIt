@@ -105,6 +105,11 @@
     <string name="friend_recently_played">Recently played · By hours</string>
     <string name="friend_view_achievements">Achievements</string>
     <string name="friend_compare_achievements">Compare with me</string>
+    <string name="achievements_empty">No achievements loaded. Sign in to Steam or set a Steam Web API key in settings.</string>
+    <string name="achievements_retry">Retry</string>
+    <string name="achievements_compare_legend">Friend vs you (✓ = unlocked)</string>
+    <string name="achievements_compare_friend">Friend</string>
+    <string name="achievements_compare_you">You</string>
     <string name="friend_hours">%s hrs</string>
 
     <!-- Custom Games -->

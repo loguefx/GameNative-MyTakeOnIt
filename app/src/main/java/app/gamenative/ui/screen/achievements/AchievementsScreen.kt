@@ -9,10 +9,13 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -90,6 +93,10 @@ fun AchievementsScreen(
         var showCompare by remember { mutableStateOf(false) }
         val unlocked = achievements.count { it.unlocked }
         val total = achievements.size
+        val friendMap = achievements.associateBy { it.apiName }
+        val myMap = myAchievements.associateBy { it.apiName }
+        val allNames = (friendMap.keys + myMap.keys).distinct()
+        val showingCompare = showCompare && viewModel.isViewingFriend && allNames.isNotEmpty()
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -110,36 +117,105 @@ fun AchievementsScreen(
                     )
                 }
             }
-            if (showCompare && viewModel.isViewingFriend && myAchievements.isNotEmpty()) {
+            if (showingCompare) {
                 Text(
-                    text = "Friend vs You (✓ = unlocked)",
+                    text = stringResource(R.string.achievements_compare_legend),
                     style = PluviaTypography.labelSmall,
                     color = gnTextTertiary,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
-                val friendMap = achievements.associateBy { it.apiName }
-                val myMap = myAchievements.associateBy { it.apiName }
-                val allNames = (friendMap.keys + myMap.keys).distinct()
-                Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                    allNames.take(15).forEach { apiName ->
-                        val friendUnlocked = friendMap[apiName]?.unlocked == true
-                        val myUnlocked = myMap[apiName]?.unlocked == true
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 4.dp)
+                        .padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "",
+                        style = PluviaTypography.labelSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                         Text(
-                            text = "${friendMap[apiName]?.name ?: myMap[apiName]?.name ?: apiName}: Friend ${if (friendUnlocked) "✓" else "—"} | You ${if (myUnlocked) "✓" else "—"}",
-                            style = PluviaTypography.bodySmall,
-                            color = gnTextSecondary,
+                            text = stringResource(R.string.achievements_compare_friend),
+                            style = PluviaTypography.labelSmall,
+                            color = gnTextTertiary,
+                        )
+                        Text(
+                            text = stringResource(R.string.achievements_compare_you),
+                            style = PluviaTypography.labelSmall,
+                            color = gnTextTertiary,
                         )
                     }
-                    if (allNames.size > 15) {
-                        Text("… and ${allNames.size - 15} more", style = PluviaTypography.bodySmall, color = gnTextTertiary)
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(allNames) { apiName ->
+                        val friendUnlocked = friendMap[apiName]?.unlocked == true
+                        val myUnlocked = myMap[apiName]?.unlocked == true
+                        val displayName = friendMap[apiName]?.name ?: myMap[apiName]?.name ?: apiName
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(gnBgSurface)
+                                .border(1.dp, gnBorderCard, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = displayName,
+                                style = PluviaTypography.bodySmall,
+                                color = gnTextPrimary,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2,
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(24.dp),
+                            ) {
+                                Text(
+                                    text = if (friendUnlocked) "✓" else "—",
+                                    style = PluviaTypography.labelMedium,
+                                    color = if (friendUnlocked) gnTextPrimary else gnTextTertiary,
+                                )
+                                Text(
+                                    text = if (myUnlocked) "✓" else "—",
+                                    style = PluviaTypography.labelMedium,
+                                    color = if (myUnlocked) gnTextPrimary else gnTextTertiary,
+                                )
+                            }
+                        }
                     }
                 }
-            }
-            if (achievements.isEmpty()) {
+            } else if (achievements.isEmpty()) {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    CircularProgressIndicator()
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        CircularProgressIndicator()
+                        Text(
+                            text = stringResource(R.string.achievements_empty),
+                            style = PluviaTypography.bodySmall,
+                            color = gnTextSecondary,
+                            modifier = Modifier.padding(horizontal = 24.dp),
+                        )
+                        TextButton(onClick = { viewModel.refresh() }) {
+                            Text(stringResource(R.string.achievements_retry))
+                        }
+                    }
                 }
             } else {
                 LazyVerticalGrid(
