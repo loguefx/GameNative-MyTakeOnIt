@@ -253,12 +253,16 @@ private fun GridCardContent(
             GameSource.STEAM -> appInfo.capsuleImageUrl.ifEmpty {
                 app.gamenative.Constants.Library.steamCapsuleUrl(appInfo.gameId)
             }
+            GameSource.GOG, GameSource.EPIC -> appInfo.capsuleImageUrl.ifEmpty {
+                appInfo.clientIconUrl
+            }
             else -> appInfo.capsuleImageUrl
         }
-        return url
+        return url.ifEmpty { appInfo.clientIconUrl }
     }
-    val capsuleUrl = remember(appInfo.appId, imageRefreshCounter) { findCapsuleUrl() }
-    var imageUrl by remember(capsuleUrl) { mutableStateOf(capsuleUrl) }
+    // Include capsuleImageUrl in key so we recompute when ViewModel emits list with URLs set
+    val capsuleUrl = remember(appInfo.appId, appInfo.capsuleImageUrl, imageRefreshCounter) { findCapsuleUrl() }
+    val imageUrl = capsuleUrl
     var isInstalled by remember(appInfo.appId, appInfo.gameSource) { mutableStateOf(false) }
     val downloadInfo = remember(appInfo.appId) { if (appInfo.gameSource == GameSource.STEAM) SteamService.getAppDownloadInfo(appInfo.gameId) else null }
     var downloadProgress by remember(downloadInfo) { mutableFloatStateOf(downloadInfo?.getProgress() ?: 1f) }
@@ -296,14 +300,23 @@ private fun GridCardContent(
             .fillMaxSize()
             .clip(RoundedCornerShape(12.dp)),
     ) {
-        CoilImage(
-            modifier = Modifier.fillMaxSize(),
-            imageModel = { imageUrl },
-            imageOptions = ImageOptions(contentScale = ContentScale.Crop, contentDescription = null),
-            loading = { CircularProgressIndicator(modifier = Modifier.padding(24.dp)) },
-            failure = { Icon(Icons.Filled.QuestionMark, null, modifier = Modifier.padding(24.dp)) },
-            previewPlaceholder = painterResource(R.drawable.ic_logo_color),
-        )
+        if (imageUrl.isNotBlank()) {
+            CoilImage(
+                modifier = Modifier.fillMaxSize(),
+                imageModel = { imageUrl },
+                imageOptions = ImageOptions(contentScale = ContentScale.Crop, contentDescription = null),
+                loading = { CircularProgressIndicator(modifier = Modifier.padding(24.dp)) },
+                failure = { Icon(Icons.Filled.QuestionMark, null, modifier = Modifier.padding(24.dp)) },
+                previewPlaceholder = painterResource(R.drawable.ic_logo_color),
+            )
+        } else {
+            Icon(
+                painter = painterResource(R.drawable.ic_logo_color),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                tint = Color.White.copy(alpha = 0.3f),
+            )
+        }
         Box(
             modifier = Modifier
                 .align(Alignment.BottomStart)
