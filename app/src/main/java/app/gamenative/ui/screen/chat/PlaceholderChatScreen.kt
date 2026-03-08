@@ -2,12 +2,17 @@ package app.gamenative.ui.screen.chat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -53,13 +58,26 @@ fun PlaceholderChatScreen(
                 color = gnTextSecondary,
             )
         }
-        Text(
-            text = "Conversation with friend (chat coming in Phase 2)",
-            style = MaterialTheme.typography.bodyMedium,
-            color = gnTextSecondary,
+        Column(
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(16.dp),
-        )
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = stringResource(R.string.chat_phase2_hint),
+                style = MaterialTheme.typography.bodyMedium,
+                color = gnTextSecondary,
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            val uriHandler = LocalUriHandler.current
+            FilledTonalButton(
+                onClick = {
+                    uriHandler.openUri("https://steamcommunity.com/profiles/$steamId")
+                },
+            ) {
+                Text(stringResource(R.string.chat_open_profile_steam))
+            }
+        }
     }
 }

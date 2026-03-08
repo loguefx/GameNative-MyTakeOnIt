@@ -237,6 +237,7 @@ internal fun AppScreenContent(
     onDeleteDownloadClick: () -> Unit,
     onUpdateClick: () -> Unit,
     onBack: () -> Unit = {},
+    onAchievementsClick: (() -> Unit)? = null,
     vararg optionsMenu: AppMenuOption,
 ) {
     // Determine Wi-Fi connectivity for 'Wi-Fi only' preference
@@ -513,6 +514,22 @@ internal fun AppScreenContent(
                                 text = buttonText,
                                 style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
                             )
+                        }
+                        // Visible Achievements entry (Steam games only; also in options menu)
+                        if (onAchievementsClick != null) {
+                            OutlinedButton(
+                                modifier = Modifier.weight(1f),
+                                onClick = onAchievementsClick,
+                                shape = RoundedCornerShape(16.dp),
+                                border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
+                                contentPadding = PaddingValues(16.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.achievements_title),
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
+                                )
+                            }
                         }
                     }
                 }

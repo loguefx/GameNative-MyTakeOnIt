@@ -762,6 +762,12 @@ abstract class BaseAppScreen {
                 }
             },
             onBack = onBack,
+            onAchievementsClick = if (libraryItem.gameSource == GameSource.STEAM && isInstalledState) {
+                val appId = libraryItem.appId.removePrefix("STEAM_").substringBefore("(").trim()
+                if (appId.isNotBlank()) {
+                    { onNavigateRoute(app.gamenative.ui.screen.PluviaScreen.Achievements.route(appId)) }
+                } else null
+            } else null,
             optionsMenu = optionsMenu.toTypedArray(),
         )
 

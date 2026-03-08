@@ -92,6 +92,8 @@
     <string name="in_game">In-game</string>
     <string name="achievements_title">Achievements</string>
     <string name="achievements_progress_suffix">achievements</string>
+    <string name="chat_open_profile_steam">Open profile in Steam</string>
+    <string name="chat_phase2_hint">In-app chat is coming in Phase 2. Message this friend by opening their Steam profile.</string>
 
     <!-- Custom Games -->
     <string name="custom_games_title">Custom Games</string>
