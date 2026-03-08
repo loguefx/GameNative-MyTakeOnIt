@@ -2,6 +2,7 @@ package app.gamenative.ui.screen.chat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,11 +36,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.gamenative.Constants
 import app.gamenative.R
+import app.gamenative.data.OwnedGames
 import app.gamenative.data.SteamFriend
 import app.gamenative.service.SteamService
+import app.gamenative.ui.screen.PluviaScreen
 import app.gamenative.ui.theme.gnBgDeepest
 import app.gamenative.ui.theme.gnBgSurface
 import app.gamenative.ui.theme.gnBorderCard
@@ -48,24 +55,31 @@ import app.gamenative.ui.theme.gnTextPrimary
 import app.gamenative.ui.theme.gnTextSecondary
 import app.gamenative.ui.theme.gnTextTertiary
 import app.gamenative.ui.theme.PluviaTypography
+import app.gamenative.ui.model.FriendDetailViewModel
 import app.gamenative.ui.util.SteamIconImage
 import app.gamenative.utils.getAvatarURL
+import app.gamenative.utils.SteamUtils
 import kotlinx.coroutines.launch
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
+import com.skydoves.landscapist.coil.CoilImage
+import com.skydoves.landscapist.ImageOptions
 
 /**
- * In-app friend profile and message screen. Shows profile (avatar, name, status) and a message
- * input. Sending uses SteamService when the SteamKit chat API is available.
+ * In-app friend profile: avatar, name, status, currently playing, games (recently played + by hours),
+ * link to view/compare achievements, and chat with message history and send.
  */
 @Composable
 fun FriendDetailScreen(
     steamId: Long,
     onBack: () -> Unit,
+    onNavigateRoute: (String) -> Unit = {},
+    viewModel: FriendDetailViewModel = hiltViewModel(),
 ) {
     val friends by SteamService.friendsList.collectAsStateWithLifecycle(initialValue = emptyList())
     val friend = friends.firstOrNull { it.steamId == steamId }
+    val ownedGames by viewModel.ownedGames.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val messages = remember { mutableStateListOf<Pair<Boolean, String>>() }
     var messageText by remember { mutableStateOf("") }
@@ -73,6 +87,10 @@ fun FriendDetailScreen(
 
     LaunchedEffect(steamId) {
         if (friend == null) SteamService.requestFriendInfo(steamId)
+    }
+
+    LaunchedEffect(friend) {
+        if (friend != null) viewModel.loadOwnedGames(steamId)
     }
 
     LaunchedEffect(messages.size) {
@@ -125,7 +143,13 @@ fun FriendDetailScreen(
                         .padding(horizontal = 16.dp),
                 ) {
                     ProfileSection(friend = friend)
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
+                    GamesSection(
+                        games = ownedGames,
+                        friendSteamId = steamId,
+                        onNavigateRoute = onNavigateRoute,
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
                     Text(
                         text = stringResource(R.string.friend_message_section),
                         style = PluviaTypography.labelMedium,
@@ -209,39 +233,134 @@ private fun ProfileSection(friend: SteamFriend) {
         color = gnTextTertiary,
     )
     Spacer(modifier = Modifier.height(8.dp))
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(gnBgSurface)
             .border(1.dp, gnBorderCard, RoundedCornerShape(12.dp))
             .padding(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SteamIconImage(
+                modifier = Modifier.size(56.dp),
+                contentDescription = null,
+                size = 56.dp,
+                image = { friend.avatarHash.getAvatarURL() },
+            )
+            Column(modifier = Modifier.padding(start = 16.dp)) {
+                Text(
+                    text = friend.name.ifBlank { stringResource(R.string.friend_unknown) },
+                    style = PluviaTypography.titleMedium,
+                    color = gnTextPrimary,
+                )
+                Text(
+                    text = statusText,
+                    style = PluviaTypography.bodySmall,
+                    color = gnTextSecondary,
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background(presenceColor),
+            )
+        }
+        if (friend.isPlayingGame && friend.gameName.isNotBlank()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.friend_currently_playing) + ": " + friend.gameName,
+                style = PluviaTypography.bodySmall,
+                color = gnTextTertiary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun GamesSection(
+    games: List<OwnedGames>,
+    friendSteamId: Long,
+    onNavigateRoute: (String) -> Unit,
+) {
+    Text(
+        text = stringResource(R.string.friend_games),
+        style = PluviaTypography.labelMedium,
+        color = gnTextTertiary,
+    )
+    Spacer(modifier = Modifier.height(4.dp))
+    Text(
+        text = stringResource(R.string.friend_recently_played),
+        style = PluviaTypography.labelSmall,
+        color = gnTextTertiary,
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    val maxGames = 20
+    val list = games.take(maxGames)
+    if (list.isEmpty()) {
+        Text(
+            text = stringResource(R.string.friend_loading),
+            style = PluviaTypography.bodySmall,
+            color = gnTextSecondary,
+            modifier = Modifier.padding(vertical = 8.dp),
+        )
+    } else {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            list.forEach { game ->
+                GameRow(
+                    game = game,
+                    onViewAchievements = { onNavigateRoute(PluviaScreen.Achievements.route(game.appId.toString(), friendSteamId)) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GameRow(
+    game: OwnedGames,
+    onViewAchievements: () -> Unit,
+) {
+    val iconUrl = if (game.imgIconUrl.isNotBlank()) {
+        "${Constants.Library.ICON_URL}${game.appId}/${game.imgIconUrl}.jpg"
+    } else null
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(gnBgSurface)
+            .border(1.dp, gnBorderCard, RoundedCornerShape(8.dp))
+            .clickable(onClick = onViewAchievements)
+            .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        SteamIconImage(
-            modifier = Modifier.size(56.dp),
-            contentDescription = null,
-            size = 56.dp,
-            image = { friend.avatarHash.getAvatarURL() },
-        )
-        Column(modifier = Modifier.padding(start = 16.dp)) {
+        if (iconUrl != null) {
+            CoilImage(
+                imageModel = { iconUrl },
+                imageOptions = ImageOptions(contentScale = ContentScale.Crop),
+                modifier = Modifier.size(40.dp),
+            )
+            Spacer(modifier = Modifier.size(10.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = friend.name.ifBlank { stringResource(R.string.friend_unknown) },
-                style = PluviaTypography.titleMedium,
+                text = game.name.ifBlank { "App ${game.appId}" },
+                style = PluviaTypography.titleSmall,
                 color = gnTextPrimary,
             )
             Text(
-                text = statusText,
+                text = stringResource(R.string.friend_hours, SteamUtils.formatPlayTime(game.playtimeForever)),
                 style = PluviaTypography.bodySmall,
                 color = gnTextSecondary,
             )
         }
-        Spacer(modifier = Modifier.weight(1f))
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(CircleShape)
-                .background(presenceColor),
-        )
+        OutlinedButton(
+            onClick = onViewAchievements,
+            modifier = Modifier.padding(start = 8.dp),
+        ) {
+            Text(stringResource(R.string.friend_view_achievements), style = PluviaTypography.labelMedium)
+        }
     }
 }

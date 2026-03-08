@@ -12,8 +12,9 @@ sealed class PluviaScreen(val route: String) {
         fun route(id: Long) = "chat/$id"
         const val ARG_ID = "id"
     }
-    data object Achievements : PluviaScreen("achievements/{appId}") {
-        fun route(appId: String) = "achievements/$appId"
+    data object Achievements : PluviaScreen("achievements/{appId}/{steamId}") {
+        fun route(appId: String, steamId: Long = 0L) = "achievements/$appId/$steamId"
         const val ARG_APP_ID = "appId"
+        const val ARG_STEAM_ID = "steamId"
     }
 }

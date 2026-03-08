@@ -2511,7 +2511,7 @@ class SteamService : Service(), IChallengeUrlChanged {
         }
 
         suspend fun getOwnedGames(friendID: Long): List<OwnedGames> = withContext(Dispatchers.IO) {
-            instance?._unifiedFriends!!.getOwnedGames(friendID)
+            instance?._unifiedFriends?.getOwnedGames(friendID) ?: emptyList()
         }
 
         // Add helper to detect if any downloads or cloud sync are in progress

@@ -1064,14 +1064,16 @@ fun PluviaMain(
                 app.gamenative.ui.screen.chat.FriendDetailScreen(
                     steamId = id,
                     onBack = { navController.navigateUp() },
+                    onNavigateRoute = { navController.navigate(it) },
                 )
             }
 
-            /** Achievements **/
+            /** Achievements (optional steamId: 0 = current user, non-zero = friend's achievements) **/
             composable(
                 route = PluviaScreen.Achievements.route,
                 arguments = listOf(
                     navArgument(PluviaScreen.Achievements.ARG_APP_ID) { type = NavType.StringType },
+                    navArgument(PluviaScreen.Achievements.ARG_STEAM_ID) { type = NavType.StringType; defaultValue = "0" },
                 ),
             ) {
                 AchievementsScreen(

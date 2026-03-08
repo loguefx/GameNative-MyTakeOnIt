@@ -100,6 +100,12 @@
     <string name="friend_message_hint">Type a message…</string>
     <string name="friend_loading">Loading…</string>
     <string name="friend_unknown">Friend</string>
+    <string name="friend_currently_playing">Currently playing</string>
+    <string name="friend_games">Games</string>
+    <string name="friend_recently_played">Recently played · By hours</string>
+    <string name="friend_view_achievements">Achievements</string>
+    <string name="friend_compare_achievements">Compare with me</string>
+    <string name="friend_hours">%s hrs</string>
 
     <!-- Custom Games -->
     <string name="custom_games_title">Custom Games</string>
