@@ -563,6 +563,11 @@ class SteamService : Service(), IChallengeUrlChanged {
             return runBlocking(Dispatchers.IO) { instance?.downloadingAppInfoDao?.getDownloadingApp(appId) }
         }
 
+        /** App IDs currently in the downloading table (install in progress). Used to exclude from Installed filter and show in Downloads. */
+        fun getDownloadingAppIds(): List<Int> {
+            return runBlocking(Dispatchers.IO) { instance?.downloadingAppInfoDao?.getAllAppIds() ?: emptyList() }
+        }
+
         fun getDownloadableDlcAppsOf(appId: Int): List<SteamApp>? {
             return runBlocking(Dispatchers.IO) { instance?.appDao?.findDownloadableDLCApps(appId) }
         }
@@ -1506,7 +1511,7 @@ class SteamService : Service(), IChallengeUrlChanged {
             Timber.i("DLC contains ${dlcAppDepots.size} depot(s): ${dlcAppDepots.keys}")
             Timber.i("downloadingAppIds: $downloadingAppIds")
 
-            // Save downloading app info
+            // Save downloading app info (so Installed filter excludes it and Downloads tab shows it)
             runBlocking {
                 instance?.downloadingAppInfoDao?.insert(
                     DownloadingAppInfo(
@@ -1515,6 +1520,7 @@ class SteamService : Service(), IChallengeUrlChanged {
                     ),
                 )
             }
+            PluviaApp.events.emit(AndroidEvent.LibraryInstallStatusChanged(appId))
 
             val info = DownloadInfo(selectedDepots.size, appId, downloadingAppIds).also { di ->
                 di.setPersistencePath(appDirPath)

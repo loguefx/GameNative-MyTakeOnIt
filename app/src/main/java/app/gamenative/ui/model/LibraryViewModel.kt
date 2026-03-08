@@ -294,6 +294,8 @@ class LibraryViewModel @Inject constructor(
             // Fetch download directory apps once on IO thread and cache as a HashSet for O(1) lookups
             val downloadDirectoryApps = DownloadService.getDownloadDirectoryApps()
             val downloadDirectorySet = downloadDirectoryApps.toHashSet()
+            // Apps still downloading must not appear under Installed; they show in Downloads
+            val downloadingAppIds = SteamService.getDownloadingAppIds().toSet()
 
             // Filter Steam apps first (no pagination yet)
             // Note: Don't sort individual lists - we'll sort the combined list for consistent ordering
@@ -332,7 +334,8 @@ class LibraryViewModel @Inject constructor(
                 }
                 .filter { item ->
                     if (currentState.appInfoSortType.contains(AppFilter.INSTALLED)) {
-                        downloadDirectoryApps.contains(SteamService.getAppDirName(item))
+                        downloadDirectoryApps.contains(SteamService.getAppDirName(item)) &&
+                            !downloadingAppIds.contains(item.id)
                     } else {
                         true
                     }

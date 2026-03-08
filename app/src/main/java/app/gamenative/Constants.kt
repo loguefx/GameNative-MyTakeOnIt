@@ -31,6 +31,9 @@ object Constants {
     object Library {
         const val ICON_URL = "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/"
         const val STORE_URL = "https://store.steampowered.com/app/"
+        /** Steam header image 460×215 for game rows and hero background. */
+        fun steamHeaderUrl(appId: Int): String =
+            "https://shared.steamstatic.com/store_item_assets/steam/apps/$appId/header.jpg"
         /** Fallback capsule for grid when PICS library assets are missing. */
         fun steamCapsuleUrl(appId: Int): String =
             "https://cdn.akamai.steamstatic.com/steam/apps/$appId/library_600x900.jpg"

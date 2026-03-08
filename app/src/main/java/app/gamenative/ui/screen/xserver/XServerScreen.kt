@@ -1309,6 +1309,9 @@ fun XServerScreen(
                 }
             )
         }
+
+        // In-game chat: edge handle, incoming message toast, 320dp slide-in panel (95% opacity over game)
+        app.gamenative.ui.screen.xserver.InGameChatOverlay()
     }
 
     // Element Editor Dialog

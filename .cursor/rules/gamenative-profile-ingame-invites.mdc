@@ -1,0 +1,1091 @@
+---
+description: Fix player profile screen, in-game chat side panel, and Steam game invite system. Apply when editing friend profile, player profile, in-game overlay, chat, or invite-related screens.
+globs: ["**/*Profile*", "**/*Friend*", "**/*Chat*", "**/*Invite*", "**/*InGame*", "**/*Overlay*", "**/*XServer*"]
+alwaysApply: false
+---
+
+# GameNative — Player Profile Fix + In-Game Chat Panel + Game Invites
+
+## What is broken right now (from screenshot)
+
+The current friend profile screen shows:
+- A plain card with avatar, name, "Offline" text
+- "Games / Recently played · By hours" label with "Loading..." text that never loads
+- A single oversized bright blue "Message" pill button
+- The rest of the screen is completely empty black space
+
+This must be completely replaced. Every section below is required.
+
+---
+
+## CRITICAL NAVIGATION RULE
+
+When a user taps any friend row in the friends list, they MUST go to
+PlayerProfileScreen — NOT ChatScreen. Chat is only reachable by pressing
+the Message button inside the profile screen.
+
+Find the friends list onFriendClick / onItemClick lambda and change it to:
+```kotlin
+onFriendClick = { friend ->
+    navController.navigate("playerProfile/${friend.steamId}")
+}
+```
+
+Do NOT navigate directly to chat from the friends list anywhere.
+
+---
+
+## PART 1 — PlayerProfileScreen.kt (full replacement)
+
+### Screen structure top to bottom
+
+```
+┌─────────────────────────────────────────────────────┐
+│  HERO SECTION (full bleed, 220dp tall)              │
+│  Game art background OR atmospheric glow            │
+│  Avatar + name + presence + status overlaid         │
+├─────────────────────────────────────────────────────┤
+│  ACTION BUTTONS ROW (Message | Invite | More)       │
+├─────────────────────────────────────────────────────┤
+│  CURRENTLY PLAYING CARD (only if InGame)            │
+├─────────────────────────────────────────────────────┤
+│  GAMES SECTION HEADER + sort chips                  │
+│  LazyColumn of game rows sorted by playtime desc    │
+└─────────────────────────────────────────────────────┘
+```
+
+### Data model
+
+```kotlin
+data class FriendProfile(
+    val steamId: String,
+    val displayName: String,
+    val avatarUrl: String,
+    val presenceState: PresenceState,  // ONLINE, OFFLINE, IN_GAME, AWAY
+    val currentGameName: String?,      // null when not playing
+    val currentGameAppId: Int?,
+    val currentGameHeaderUrl: String?, // cdn.../{appId}/header.jpg
+    val statusMessage: String?,
+    val memberSince: String?
+)
+
+data class FriendGame(
+    val appId: Int,
+    val name: String,
+    val headerUrl: String,             // 460x215
+    val capsuleUrl: String,            // 600x900
+    val playtimeForever: Int,          // total minutes — SORT BY THIS descending
+    val playtime2Weeks: Int,           // recent minutes
+    val lastPlayed: Long?              // unix timestamp
+)
+
+enum class PresenceState { ONLINE, OFFLINE, IN_GAME, AWAY }
+```
+
+### HERO SECTION
+
+```kotlin
+Box(
+    modifier = Modifier
+        .fillMaxWidth()
+        .height(220.dp)
+) {
+    // Background layer
+    if (profile.currentGameHeaderUrl != null) {
+        // Friend is in a game — show game art as background
+        AsyncImage(
+            model = profile.currentGameHeaderUrl,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+        // Heavy scrim so content on top is always readable
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.Transparent,
+                            gnBgDeepest.copy(alpha = 0.55f),
+                            gnBgDeepest
+                        )
+                    )
+                )
+        )
+    } else {
+        // Not in game — deep background with subtle radial glow behind avatar
+        Box(modifier = Modifier.fillMaxSize().background(gnBgDeepest)) {
+            Canvas(modifier = Modifier.align(Alignment.BottomCenter).size(200.dp)) {
+                drawCircle(
+                    color = gnAccentPrimary.copy(alpha = 0.07f),
+                    radius = size.minDimension / 1.2f
+                )
+            }
+        }
+    }
+
+    // Content overlaid on background — bottom-aligned
+    Column(
+        modifier = Modifier
+            .align(Alignment.BottomStart)
+            .padding(horizontal = 16.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // Avatar with presence ring
+        Box(contentAlignment = Alignment.BottomEnd) {
+            AsyncImage(
+                model = profile.avatarUrl,
+                modifier = Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .border(
+                        width = 3.dp,
+                        color = when (profile.presenceState) {
+                            PresenceState.ONLINE  -> gnNeonTeal
+                            PresenceState.IN_GAME -> gnAccentPrimary
+                            PresenceState.AWAY    -> gnNeonOrange
+                            PresenceState.OFFLINE -> gnTextTertiary
+                        },
+                        shape = CircleShape
+                    )
+            )
+            // Small presence dot
+            Box(
+                modifier = Modifier
+                    .size(16.dp)
+                    .background(gnBgDeepest, CircleShape)
+                    .padding(2.dp)
+                    .background(
+                        color = when (profile.presenceState) {
+                            PresenceState.ONLINE  -> gnNeonTeal
+                            PresenceState.IN_GAME -> gnAccentPrimary
+                            PresenceState.AWAY    -> gnNeonOrange
+                            PresenceState.OFFLINE -> gnTextTertiary
+                        },
+                        shape = CircleShape
+                    )
+            )
+        }
+
+        // Name
+        Text(
+            text = profile.displayName,
+            style = PluviaTypography.headlineSmall.copy(
+                fontWeight = FontWeight.Bold,
+                fontSize = 22.sp
+            ),
+            color = gnTextPrimary
+        )
+
+        // Presence line
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            when (profile.presenceState) {
+                PresenceState.IN_GAME -> {
+                    Icon(
+                        imageVector = Icons.Filled.SportsEsports,
+                        contentDescription = null,
+                        tint = gnAccentGlow,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Playing ${profile.currentGameName ?: "a game"}",
+                        style = PluviaTypography.bodySmall,
+                        color = gnAccentGlow
+                    )
+                }
+                PresenceState.ONLINE -> {
+                    Text("Online", style = PluviaTypography.bodySmall, color = gnNeonTeal)
+                }
+                PresenceState.AWAY -> {
+                    Text("Away", style = PluviaTypography.bodySmall, color = gnNeonOrange)
+                }
+                PresenceState.OFFLINE -> {
+                    Text("Offline", style = PluviaTypography.bodySmall, color = gnTextTertiary)
+                }
+            }
+        }
+
+        // Custom status message if present
+        if (!profile.statusMessage.isNullOrBlank()) {
+            Text(
+                text = "\"${profile.statusMessage}\"",
+                style = PluviaTypography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                color = gnTextSecondary
+            )
+        }
+    }
+}
+```
+
+### ACTION BUTTONS ROW
+
+Replace the single giant blue pill button with three properly sized buttons:
+
+```kotlin
+Row(
+    modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 16.dp, vertical = 12.dp),
+    horizontalArrangement = Arrangement.spacedBy(10.dp)
+) {
+    // MESSAGE — filled, navigates to ChatScreen
+    Button(
+        onClick = onNavigateToChat,
+        modifier = Modifier.weight(1f).height(44.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = gnAccentPrimary,
+            contentColor = Color.White
+        ),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Icon(Icons.Filled.Chat, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Message", style = PluviaTypography.labelLarge, fontWeight = FontWeight.SemiBold)
+    }
+
+    // INVITE — outlined, only active if local user is in a game
+    OutlinedButton(
+        onClick = onSendInvite,
+        enabled = isLocalUserInGame,   // disable if not in a game
+        modifier = Modifier.weight(1f).height(44.dp),
+        border = BorderStroke(1.dp, if (isLocalUserInGame) gnAccentPrimary else gnTextTertiary),
+        shape = RoundedCornerShape(10.dp),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = if (isLocalUserInGame) gnAccentPrimary else gnTextTertiary
+        )
+    ) {
+        Icon(Icons.Filled.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("Invite", style = PluviaTypography.labelLarge)
+    }
+
+    // MORE — icon button, opens bottom sheet
+    OutlinedIconButton(
+        onClick = { showMoreSheet = true },
+        modifier = Modifier.size(44.dp),
+        border = BorderStroke(1.dp, gnBorderCard),
+        shape = RoundedCornerShape(10.dp),
+        colors = IconButtonDefaults.outlinedIconButtonColors(contentColor = gnTextSecondary)
+    ) {
+        Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+    }
+}
+
+// More options bottom sheet
+if (showMoreSheet) {
+    ModalBottomSheet(
+        onDismissRequest = { showMoreSheet = false },
+        containerColor = gnBgSurface
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            MoreSheetItem(icon = Icons.Filled.OpenInBrowser, label = "View on Steam") {
+                openUrl(profile.profileUrl)
+            }
+            MoreSheetItem(icon = Icons.Filled.EmojiEvents, label = "Compare achievements") {
+                onNavigateToCompare()
+            }
+            Divider(color = gnDivider, modifier = Modifier.padding(vertical = 8.dp))
+            MoreSheetItem(icon = Icons.Filled.Block, label = "Block", color = gnStatusError) { }
+            MoreSheetItem(icon = Icons.Filled.PersonRemove, label = "Remove friend", color = gnStatusError) { }
+        }
+    }
+}
+```
+
+### CURRENTLY PLAYING CARD (only when IN_GAME)
+
+```kotlin
+if (profile.presenceState == PresenceState.IN_GAME && profile.currentGameHeaderUrl != null) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = gnBgSurface),
+        border = BorderStroke(1.dp, gnBorderCard)
+    ) {
+        Column {
+            // NOW PLAYING header with pulsing dot
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Pulsing dot
+                val pulseAlpha by rememberInfiniteTransition().animateFloat(
+                    initialValue = 1f,
+                    targetValue = 0.25f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(700, easing = EaseInOut),
+                        repeatMode = RepeatMode.Reverse
+                    )
+                )
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .alpha(pulseAlpha)
+                        .background(gnNeonTeal, CircleShape)
+                )
+                Text(
+                    text = "NOW PLAYING",
+                    style = PluviaTypography.labelSmall.copy(letterSpacing = 0.10.sp),
+                    color = gnNeonTeal
+                )
+            }
+
+            // Game art banner
+            AsyncImage(
+                model = profile.currentGameHeaderUrl,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(90.dp)
+            )
+
+            // Game name + time
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = profile.currentGameName ?: "Unknown Game",
+                    style = PluviaTypography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = gnTextPrimary
+                )
+                Text(
+                    text = sessionDuration,  // e.g. "Started 42m ago"
+                    style = PluviaTypography.bodySmall,
+                    color = gnTextSecondary
+                )
+            }
+        }
+    }
+}
+```
+
+### GAMES SECTION — sorted by playtime descending
+
+```kotlin
+// Section header
+Row(
+    modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 16.dp, vertical = 12.dp),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically
+) {
+    Text(
+        text = "GAMES",
+        style = PluviaTypography.labelMedium.copy(letterSpacing = 0.10.sp),
+        color = gnTextTertiary
+    )
+    Text(
+        text = "${games.size} games",
+        style = PluviaTypography.bodySmall,
+        color = gnTextSecondary
+    )
+}
+
+// Sort chips — horizontal scroll
+val sortOptions = listOf("Most Played", "Recent", "A–Z")
+Row(
+    modifier = Modifier
+        .horizontalScroll(rememberScrollState())
+        .padding(horizontal = 16.dp),
+    horizontalArrangement = Arrangement.spacedBy(8.dp)
+) {
+    sortOptions.forEach { option ->
+        FilterChip(
+            selected = selectedSort == option,
+            onClick = { selectedSort = option },
+            label = { Text(option, style = PluviaTypography.labelSmall) },
+            colors = FilterChipDefaults.filterChipColors(
+                selectedContainerColor = gnAccentSubtle,
+                selectedLabelColor = gnAccentGlow,
+                containerColor = gnBgElevated,
+                labelColor = gnTextSecondary
+            ),
+            border = FilterChipDefaults.filterChipBorder(
+                enabled = true,
+                selected = selectedSort == option,
+                borderColor = gnBorderCard,
+                selectedBorderColor = gnAccentPrimary.copy(alpha = 0.4f)
+            ),
+            shape = RoundedCornerShape(20.dp)
+        )
+    }
+}
+
+// Games list — sorted by playtimeForever descending by default
+// Sort logic in ViewModel:
+// val sortedGames = games.sortedByDescending { it.playtimeForever }
+//
+// Each game row:
+items(sortedGames, key = { it.appId }) { game ->
+    GameRowItem(game = game)
+}
+
+@Composable
+fun GameRowItem(game: FriendGame) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = gnBgSurface),
+        border = BorderStroke(
+            width = if (game.playtime2Weeks > 0) 1.dp else 1.dp,
+            color = if (game.playtime2Weeks > 0) gnAccentPrimary.copy(alpha = 0.3f) else gnBorderCard
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Game header art thumbnail
+            AsyncImage(
+                model = game.headerUrl,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .width(88.dp)
+                    .height(41.dp)
+                    .clip(RoundedCornerShape(6.dp))
+            )
+
+            // Name + last played
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = game.name,
+                    style = PluviaTypography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = gnTextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (game.lastPlayed != null)
+                        "Last played ${formatRelativeTime(game.lastPlayed)}"
+                    else "Never played",
+                    style = PluviaTypography.bodySmall,
+                    color = gnTextSecondary
+                )
+            }
+
+            // Playtime — right side
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                val totalHours = game.playtimeForever / 60f
+                Text(
+                    text = if (totalHours < 1f) "${game.playtimeForever}m"
+                           else "%.1f hrs".format(totalHours),
+                    style = PluviaTypography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (game.playtime2Weeks > 0) gnAccentGlow else gnTextPrimary
+                )
+                if (game.playtime2Weeks > 0) {
+                    Text(
+                        text = "${game.playtime2Weeks / 60f:.1f}h recently",
+                        style = PluviaTypography.labelSmall,
+                        color = gnNeonTeal
+                    )
+                } else {
+                    Text("total", style = PluviaTypography.labelSmall, color = gnTextTertiary)
+                }
+            }
+        }
+    }
+}
+```
+
+### Loading state (shimmer while data fetches)
+
+```kotlin
+// While isLoading == true, show shimmer placeholders:
+// 1 shimmer hero block (220dp tall, gnBgElevated)
+// 1 shimmer button row (44dp, gnBgElevated)
+// 6 shimmer game rows (each 61dp, gnBgElevated)
+// Use existing ShimmerFrameLayout pattern from LibraryListPane
+// Do NOT show "Loading..." plain text anywhere
+```
+
+---
+
+## PART 2 — IN-GAME CHAT SIDE PANEL
+
+### What this is
+
+When a game is running (XServerScreen is active) and a Steam chat message
+arrives, the user can open a slide-in panel from the right edge of the screen
+to read and reply without leaving the game. The game continues running behind
+the panel at full speed — no pause, no suspend.
+
+### How to trigger it
+
+Two entry points:
+1. A new message arrives while in-game → show a small toast-style notification
+   at the top of the screen for 4 seconds with the sender's name + message preview.
+   Tapping the toast slides the panel open.
+2. A persistent edge handle on the right side of the screen (small 48dp × 4dp
+   pill, gnAccentPrimary color, 50% alpha when idle). Tapping it toggles the panel.
+
+### Panel layout
+
+```kotlin
+// The panel slides in from the right over the game.
+// It does NOT replace the game view — it overlays it.
+// Width = 320.dp (fixed), height = fillMaxHeight
+// Use AnimatedVisibility with slideInHorizontally + slideOutHorizontally
+
+// In XServerScreen.kt, add this at the root Box level AFTER the game surface:
+Box(modifier = Modifier.fillMaxSize()) {
+
+    // Game surface (existing XServer content here — untouched)
+    XServerSurfaceView(modifier = Modifier.fillMaxSize())
+
+    // Edge handle (always visible, low opacity when panel closed)
+    Box(
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .width(4.dp)
+            .height(48.dp)
+            .offset(x = if (panelOpen) 0.dp else 4.dp)
+            .background(gnAccentPrimary.copy(alpha = if (panelOpen) 0f else 0.5f), RoundedCornerShape(2.dp))
+            .clickable { panelOpen = !panelOpen }
+    )
+
+    // Incoming message toast
+    AnimatedVisibility(
+        visible = showToast,
+        modifier = Modifier.align(Alignment.TopCenter).padding(top = 48.dp),
+        enter = slideInVertically() + fadeIn(),
+        exit = slideOutVertically() + fadeOut()
+    ) {
+        IncomingMessageToast(
+            senderName = toastSenderName,
+            messagePreview = toastMessagePreview,
+            avatarUrl = toastAvatarUrl,
+            onClick = { panelOpen = true; showToast = false }
+        )
+    }
+
+    // Side chat panel
+    AnimatedVisibility(
+        visible = panelOpen,
+        modifier = Modifier.align(Alignment.CenterEnd),
+        enter = slideInHorizontally(initialOffsetX = { it }),
+        exit = slideOutHorizontally(targetOffsetX = { it })
+    ) {
+        InGameChatPanel(
+            steamId = activeChatSteamId,
+            onClose = { panelOpen = false },
+            onSendMessage = { msg -> chatViewModel.sendMessage(activeChatSteamId, msg) },
+            messages = chatViewModel.messages.collectAsState().value
+        )
+    }
+}
+```
+
+### InGameChatPanel composable
+
+```kotlin
+@Composable
+fun InGameChatPanel(
+    steamId: String,
+    onClose: () -> Unit,
+    onSendMessage: (String) -> Unit,
+    messages: List<ChatMessage>
+) {
+    // Semi-transparent background so the game is faintly visible behind
+    Surface(
+        modifier = Modifier
+            .width(320.dp)
+            .fillMaxHeight(),
+        color = gnBgDeepest.copy(alpha = 0.95f),
+        tonalElevation = 0.dp
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            // Panel header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(gnBgSurface)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    AsyncImage(
+                        model = friendAvatarUrl,
+                        modifier = Modifier.size(32.dp).clip(CircleShape)
+                    )
+                    Column {
+                        Text(
+                            text = friendName,
+                            style = PluviaTypography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = gnTextPrimary
+                        )
+                        Text(
+                            text = friendPresence,  // "Online" / "In Game: Elden Ring"
+                            style = PluviaTypography.bodySmall,
+                            color = gnTextSecondary
+                        )
+                    }
+                }
+                // Close button — returns focus to game
+                IconButton(onClick = onClose) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowRight,
+                        contentDescription = "Close chat",
+                        tint = gnTextSecondary
+                    )
+                }
+            }
+
+            Divider(color = gnDivider)
+
+            // Messages list
+            LazyColumn(
+                modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+                reverseLayout = true,   // newest at bottom
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) {
+                items(messages.reversed(), key = { it.id }) { msg ->
+                    ChatBubble(message = msg)
+                }
+            }
+
+            Divider(color = gnDivider)
+
+            // Input row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(gnBgSurface)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .navigationBarsPadding()
+                    .imePadding(),   // CRITICAL: rises above keyboard
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                var inputText by remember { mutableStateOf("") }
+
+                TextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = {
+                        Text("Message…", color = gnTextTertiary, style = PluviaTypography.bodyMedium)
+                    },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = gnBgElevated,
+                        unfocusedContainerColor = gnBgElevated,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        focusedTextColor = gnTextPrimary,
+                        unfocusedTextColor = gnTextPrimary,
+                        cursorColor = gnAccentPrimary
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    singleLine = false,
+                    maxLines = 3,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = {
+                            if (inputText.isNotBlank()) {
+                                onSendMessage(inputText.trim())
+                                inputText = ""
+                            }
+                        }
+                    )
+                )
+
+                // Send button
+                IconButton(
+                    onClick = {
+                        if (inputText.isNotBlank()) {
+                            onSendMessage(inputText.trim())
+                            inputText = ""
+                        }
+                    },
+                    modifier = Modifier
+                        .size(42.dp)
+                        .background(gnAccentPrimary, RoundedCornerShape(10.dp))
+                ) {
+                    Icon(Icons.Filled.Send, contentDescription = "Send", tint = Color.White)
+                }
+            }
+        }
+    }
+}
+```
+
+### ChatBubble composable
+
+```kotlin
+@Composable
+fun ChatBubble(message: ChatMessage) {
+    val isFromMe = message.fromSelf
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isFromMe) Arrangement.End else Arrangement.Start
+    ) {
+        Box(
+            modifier = Modifier
+                .widthIn(max = 220.dp)
+                .background(
+                    color = if (isFromMe) gnAccentPrimary else gnBgElevated,
+                    shape = RoundedCornerShape(
+                        topStart = 12.dp, topEnd = 12.dp,
+                        bottomStart = if (isFromMe) 12.dp else 2.dp,
+                        bottomEnd = if (isFromMe) 2.dp else 12.dp
+                    )
+                )
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = message.content,
+                    style = PluviaTypography.bodyMedium,
+                    color = if (isFromMe) Color.White else gnTextPrimary
+                )
+                Text(
+                    text = formatMessageTime(message.timestamp),
+                    style = PluviaTypography.labelSmall,
+                    color = if (isFromMe) Color.White.copy(alpha = 0.6f) else gnTextTertiary,
+                    modifier = Modifier.align(Alignment.End)
+                )
+            }
+        }
+    }
+}
+```
+
+### IncomingMessageToast composable
+
+```kotlin
+@Composable
+fun IncomingMessageToast(
+    senderName: String,
+    messagePreview: String,
+    avatarUrl: String,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier
+            .widthIn(max = 320.dp)
+            .padding(horizontal = 16.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = gnBgSurface),
+        border = BorderStroke(1.dp, gnBorderCard)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            AsyncImage(
+                model = avatarUrl,
+                modifier = Modifier.size(36.dp).clip(CircleShape)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = senderName,
+                    style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                    color = gnTextPrimary
+                )
+                Text(
+                    text = messagePreview,
+                    style = PluviaTypography.bodySmall,
+                    color = gnTextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                imageVector = Icons.Filled.KeyboardArrowLeft,
+                contentDescription = "Open",
+                tint = gnAccentGlow,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+```
+
+### How new messages reach XServerScreen while a game is running
+
+In XServerScreen's LaunchedEffect or init:
+```kotlin
+LaunchedEffect(Unit) {
+    chatViewModel.incomingMessages.collect { message ->
+        // Show the toast
+        toastSenderName = message.senderName
+        toastMessagePreview = message.content.take(60)
+        toastAvatarUrl = message.senderAvatarUrl
+        activeChatSteamId = message.senderId
+        showToast = true
+
+        // Auto-dismiss after 4 seconds
+        delay(4000)
+        showToast = false
+    }
+}
+```
+
+---
+
+## PART 3 — STEAM GAME INVITES
+
+### How invites arrive
+
+Steam game invites arrive as a FriendMsgCallback or as a RichPresence update
+via SteamKit. Detect them in SteamService by checking for:
+- `EChatEntryType.InviteGame`
+- Message content starting with `+connect_lobby` or `connect_lobby`
+- Rich presence key `connect` being set on the friend's persona state
+
+### InviteRepository
+
+```kotlin
+class InviteRepository @Inject constructor(
+    private val steamService: SteamService
+) {
+    private val _pendingInvites = MutableStateFlow<List<GameInvite>>(emptyList())
+    val pendingInvites: StateFlow<List<GameInvite>> = _pendingInvites
+
+    fun onInviteReceived(invite: GameInvite) {
+        _pendingInvites.update { current -> current + invite }
+    }
+
+    fun dismissInvite(inviteId: String) {
+        _pendingInvites.update { current -> current.filter { it.id != inviteId } }
+    }
+}
+
+data class GameInvite(
+    val id: String,                  // UUID generated on receipt
+    val fromSteamId: String,
+    val fromName: String,
+    val fromAvatarUrl: String,
+    val gameName: String,
+    val gameAppId: Int,
+    val gameHeaderUrl: String,
+    val connectString: String,       // "+connect_lobby/connect_lobby..." passed to Wine
+    val receivedAt: Long
+)
+```
+
+### Invite notification — shown anywhere in the app
+
+```kotlin
+// In your root Scaffold or MainActivity content, collect pendingInvites
+// and show an InviteToast for the most recent one:
+
+val pendingInvites by inviteViewModel.pendingInvites.collectAsState()
+val latestInvite = pendingInvites.firstOrNull()
+
+AnimatedVisibility(
+    visible = latestInvite != null,
+    modifier = Modifier
+        .align(Alignment.TopCenter)
+        .padding(top = 52.dp)
+        .zIndex(999f),  // always above other content
+    enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+    exit  = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
+) {
+    latestInvite?.let { invite ->
+        GameInviteBanner(
+            invite = invite,
+            onAccept = {
+                inviteViewModel.acceptInvite(invite)
+                inviteViewModel.dismissInvite(invite.id)
+            },
+            onDecline = {
+                inviteViewModel.dismissInvite(invite.id)
+            }
+        )
+    }
+}
+```
+
+### GameInviteBanner composable
+
+```kotlin
+@Composable
+fun GameInviteBanner(
+    invite: GameInvite,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = gnBgSurface),
+        border = BorderStroke(1.dp, gnAccentPrimary.copy(alpha = 0.4f))
+    ) {
+        Column {
+            // Game art banner strip
+            AsyncImage(
+                model = invite.gameHeaderUrl,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            )
+            // Scrim over art
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .offset(y = (-56).dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, gnBgSurface.copy(alpha = 0.7f))
+                        )
+                    )
+            )
+
+            // Info row
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                AsyncImage(
+                    model = invite.fromAvatarUrl,
+                    modifier = Modifier.size(36.dp).clip(CircleShape)
+                        .border(1.5.dp, gnNeonTeal, CircleShape)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "${invite.fromName} invited you",
+                        style = PluviaTypography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = gnTextPrimary
+                    )
+                    Text(
+                        text = invite.gameName,
+                        style = PluviaTypography.bodySmall,
+                        color = gnAccentGlow
+                    )
+                }
+            }
+
+            // Accept / Decline buttons
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+                    .padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // DECLINE
+                OutlinedButton(
+                    onClick = onDecline,
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    border = BorderStroke(1.dp, gnBorderCard),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = gnTextSecondary)
+                ) {
+                    Text("Decline", style = PluviaTypography.labelLarge)
+                }
+
+                // ACCEPT
+                Button(
+                    onClick = onAccept,
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = gnAccentPrimary,
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Filled.SportsEsports, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Join Game", style = PluviaTypography.labelLarge, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+```
+
+### Accepting an invite — passing connect string to Wine
+
+```kotlin
+fun acceptInvite(invite: GameInvite) {
+    viewModelScope.launch(Dispatchers.IO) {
+        if (isGameCurrentlyRunning()) {
+            // Game is already running — pass the connect string directly
+            // Use ContainerUtils to run a command inside the container
+            ContainerUtils.runCommand(
+                context = appContext,
+                command = "wine start /unix steam://run/${invite.gameAppId}//${invite.connectString}/"
+            )
+        } else {
+            // Game is not running — launch the game with the connect string as a launch arg
+            // Store the connect string so LaunchOrchestrator picks it up
+            pendingConnectString = invite.connectString
+            pendingConnectAppId = invite.gameAppId
+            // Navigate to the game's page so user can see it launching
+            withContext(Dispatchers.Main) {
+                navController.navigate("gameDetail/${invite.gameAppId}?autoLaunch=true")
+            }
+        }
+    }
+}
+```
+
+### In-game invite notification (when already playing)
+
+When an invite arrives while the user is inside XServerScreen:
+```kotlin
+// In XServerScreen LaunchedEffect, also listen to pendingInvites:
+LaunchedEffect(Unit) {
+    inviteViewModel.pendingInvites.collect { invites ->
+        val latest = invites.firstOrNull()
+        if (latest != null) {
+            // Show the invite banner overlaid on the game
+            // Same GameInviteBanner composable, added to the root Box in XServerScreen
+            showInviteBanner = true
+            activeInvite = latest
+        }
+    }
+}
+```
+
+---
+
+## DESIGN CONSTRAINTS (apply to all components above)
+
+- Background: gnBgDeepest (#09090F) on all screens
+- Cards: gnBgSurface (#12121C), 10-12dp corners, gnBorderCard 1dp stroke, elevation=0
+- Fonts: GameNativeFontFamily (Outfit) via PluviaTypography everywhere
+- Do NOT define new colors — only existing gn_* tokens from Color.kt
+- No elevation shadows — stroke borders only
+- Presence state colors:
+    ONLINE  → gnNeonTeal
+    IN_GAME → gnAccentPrimary
+    AWAY    → gnNeonOrange
+    OFFLINE → gnTextTertiary
+- In-game panel: gnBgDeepest.copy(alpha=0.95f) so game is faintly visible behind
+- Message bubbles: sent=gnAccentPrimary bg white text, received=gnBgElevated gnTextPrimary
+- Invite banner: always uses gnAccentPrimary border tint so it stands out from regular cards
+- All LazyColumn/LazyRow keys must be stable: key = { it.appId }, key = { it.id }, etc.
+- All network calls on Dispatchers.IO, all UI state updates on Dispatchers.Main
+- All loading states show shimmer — never show "Loading..." plain text
+- imePadding() on the chat input row so keyboard never covers the text field
+- The in-game chat panel MUST NOT pause or affect the running game process in any way
+- The edge handle must always be visible during gameplay so users can always access chat

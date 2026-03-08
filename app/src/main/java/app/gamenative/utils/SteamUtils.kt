@@ -70,6 +70,23 @@ object SteamUtils {
         }
     }
 
+    /**
+     * Formats a unix timestamp as relative time for "Last played X ago".
+     */
+    @SuppressLint("DefaultLocale")
+    fun formatRelativeTime(unixSeconds: Long): String {
+        val now = System.currentTimeMillis() / 1000
+        val diff = (now - unixSeconds).coerceAtLeast(0)
+        return when {
+            diff < 60 -> "just now"
+            diff < 3600 -> String.format("%dm ago", diff / 60)
+            diff < 86400 -> String.format("%dh ago", diff / 3600)
+            diff < 604800 -> String.format("%dd ago", diff / 86400)
+            diff < 2592000 -> String.format("%dw ago", diff / 604800)
+            else -> String.format("%dmo ago", diff / 2592000)
+        }
+    }
+
     // Steam strips all non-ASCII characters from usernames and passwords
     // source: https://github.com/steevp/UpdogFarmer/blob/8f2d185c7260bc2d2c92d66b81f565188f2c1a0e/app/src/main/java/com/steevsapps/idledaddy/LoginActivity.java#L166C9-L168C104
     // more: https://github.com/winauth/winauth/issues/368#issuecomment-224631002

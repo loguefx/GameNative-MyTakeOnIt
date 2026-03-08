@@ -108,6 +108,7 @@ import timber.log.Timber
 @Composable
 fun PluviaMain(
     viewModel: MainViewModel = hiltViewModel(),
+    inviteViewModel: app.gamenative.ui.model.InviteViewModel = hiltViewModel(),
     navController: NavHostController = rememberNavController(),
     lifecycleOwner: LifecycleOwner = LocalLifecycleOwner.current,
 ) {
@@ -973,10 +974,13 @@ fun PluviaMain(
             )
         }
 
-        NavHost(
-            navController = navController,
-            startDestination = PluviaScreen.LoginUser.route,
-        ) {
+        val pendingInvites by inviteViewModel.pendingInvites.collectAsStateWithLifecycle()
+        val latestInvite = pendingInvites.firstOrNull()
+        Box(modifier = Modifier.fillMaxSize()) {
+            NavHost(
+                navController = navController,
+                startDestination = PluviaScreen.LoginUser.route,
+            ) {
             /** Login **/
             /** Login **/
             composable(route = PluviaScreen.LoginUser.route) {
@@ -1064,6 +1068,7 @@ fun PluviaMain(
                 app.gamenative.ui.screen.chat.FriendDetailScreen(
                     steamId = id,
                     isProfileOnly = true,
+                    isLocalUserInGame = state.launchedAppId.isNotBlank(),
                     onBack = { navController.navigateUp() },
                     onNavigateRoute = { navController.navigate(it) },
                     onNavigateToChat = { navController.navigate(PluviaScreen.Chat.route(id)) },
@@ -1150,6 +1155,32 @@ fun PluviaMain(
                     onPaletteStyle = viewModel::setPalette,
                     onBack = { navController.navigateUp() },
                 )
+            }
+        }
+
+            androidx.compose.animation.AnimatedVisibility(
+                visible = latestInvite != null,
+                modifier = Modifier
+                    .align(androidx.compose.ui.Alignment.TopCenter)
+                    .padding(top = 52.dp)
+                    .zIndex(999f),
+                enter = androidx.compose.animation.slideInVertically(initialOffsetY = { -it }) + androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.slideOutVertically(targetOffsetY = { -it }) + androidx.compose.animation.fadeOut(),
+            ) {
+                latestInvite?.let { invite ->
+                    app.gamenative.ui.component.GameInviteBanner(
+                        invite = invite,
+                        onAccept = {
+                            inviteViewModel.acceptInvite(
+                                invite = invite,
+                                isGameRunning = state.launchedAppId.isNotBlank(),
+                                launchedAppId = state.launchedAppId,
+                                onNavigate = { navController.navigate(it) },
+                            )
+                        },
+                        onDecline = { inviteViewModel.dismissInvite(invite.id) },
+                    )
+                }
             }
         }
     }

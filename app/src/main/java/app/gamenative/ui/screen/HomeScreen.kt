@@ -9,6 +9,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -29,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.gamenative.R
 import app.gamenative.ui.enums.HomeDestination
 import app.gamenative.ui.model.HomeViewModel
+import app.gamenative.ui.screen.downloads.DownloadsScreen
 import app.gamenative.ui.screen.friends.FriendsScreen
 import app.gamenative.ui.screen.library.HomeLibraryScreen
 import app.gamenative.ui.theme.PluviaTheme
@@ -49,6 +52,8 @@ fun HomeScreen(
 ) {
     val homeState by viewModel.homeState.collectAsStateWithLifecycle()
     val currentDestination = homeState.currentDestination
+    val downloadingCount by viewModel.downloadingCount.collectAsStateWithLifecycle()
+    val downloadingAppIds by viewModel.downloadingAppIds.collectAsStateWithLifecycle()
 
     BackHandler {
         onClickExit()
@@ -63,14 +68,27 @@ fun HomeScreen(
             ) {
                 HomeDestination.entries.forEach { destination ->
                     val selected = currentDestination == destination
+                    val showBadge = destination == HomeDestination.Downloads && downloadingCount > 0
                     NavigationBarItem(
                         selected = selected,
                         onClick = { viewModel.onDestination(destination) },
                         icon = {
-                            Icon(
-                                imageVector = destination.icon,
-                                contentDescription = stringResource(destination.title),
-                            )
+                            BadgedBox(
+                                badge = {
+                                    if (showBadge) {
+                                        Badge {
+                                            Text(
+                                                text = if (downloadingCount > 99) "99+" else "$downloadingCount",
+                                            )
+                                        }
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    imageVector = destination.icon,
+                                    contentDescription = stringResource(destination.title),
+                                )
+                            }
                         },
                         label = { Text(stringResource(destination.title)) },
                         colors = NavigationBarItemDefaults.colors(
@@ -95,26 +113,12 @@ fun HomeScreen(
                     onGoOnline = onGoOnline,
                     isOffline = isOffline,
                 )
-                HomeDestination.Downloads -> PlaceholderDownloadsContent()
+                HomeDestination.Downloads -> DownloadsScreen(downloadingAppIds = downloadingAppIds)
                 HomeDestination.Friends -> FriendsScreen(
                     onFriendClick = onChat,
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun PlaceholderDownloadsContent() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = stringResource(R.string.destination_downloads),
-            style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
-            color = app.gamenative.ui.theme.gnTextSecondary,
-        )
     }
 }
 
