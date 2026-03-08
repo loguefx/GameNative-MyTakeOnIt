@@ -449,7 +449,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         envVars.put("PROOT_LOADER", nativeLibraryDir + "/libproot-loader.so");
         if (proot32) envVars.put("PROOT_LOADER_32", nativeLibraryDir + "/libproot-loader32.so");
         try {
-            Process process = Runtime.getRuntime().exec(
+            java.lang.Process process = Runtime.getRuntime().exec(
                     ProcessHelper.splitCommand(command),
                     envVars.toStringArray(),
                     workingDir != null ? workingDir : rootDir);
