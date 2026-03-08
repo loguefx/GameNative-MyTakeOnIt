@@ -73,24 +73,64 @@ fun FriendsScreen(
                 color = gnTextTertiary,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
+            val onlineFriends = friends.filter { it.isOnline }
+            val offlineFriends = friends.filter { !it.isOnline }
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(
-                    items = friends,
-                    key = { it.steamId },
-                ) { friend ->
-                    FriendRow(
-                        friend = friend,
-                        onClick = { onFriendClick(friend.steamId) },
-                    )
+                if (onlineFriends.isNotEmpty()) {
+                    item(key = "header_online") {
+                        FriendsSectionHeader(
+                            title = stringResource(R.string.online),
+                            count = onlineFriends.size,
+                        )
+                    }
+                    items(
+                        items = onlineFriends,
+                        key = { it.steamId },
+                    ) { friend ->
+                        FriendRow(
+                            friend = friend,
+                            onClick = { onFriendClick(friend.steamId) },
+                        )
+                    }
+                }
+                if (offlineFriends.isNotEmpty()) {
+                    item(key = "header_offline") {
+                        FriendsSectionHeader(
+                            title = stringResource(R.string.offline),
+                            count = offlineFriends.size,
+                        )
+                    }
+                    items(
+                        items = offlineFriends,
+                        key = { it.steamId },
+                    ) { friend ->
+                        FriendRow(
+                            friend = friend,
+                            onClick = { onFriendClick(friend.steamId) },
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun FriendsSectionHeader(
+    title: String,
+    count: Int,
+) {
+    Text(
+        text = "$title ($count)",
+        style = PluviaTypography.labelMedium,
+        color = gnTextTertiary,
+        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+    )
 }
 
 @Composable

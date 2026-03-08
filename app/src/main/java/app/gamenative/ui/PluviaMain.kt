@@ -1061,7 +1061,7 @@ fun PluviaMain(
                 ),
             ) { backStackEntry ->
                 val id = backStackEntry.arguments?.getString(PluviaScreen.Chat.ARG_ID)?.toLongOrNull() ?: 0L
-                app.gamenative.ui.screen.chat.PlaceholderChatScreen(
+                app.gamenative.ui.screen.chat.FriendDetailScreen(
                     steamId = id,
                     onBack = { navController.navigateUp() },
                 )

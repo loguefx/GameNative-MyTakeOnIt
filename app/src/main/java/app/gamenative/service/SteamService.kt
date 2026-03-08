@@ -456,6 +456,19 @@ class SteamService : Service(), IChallengeUrlChanged {
             userSteamId?.let { instance?._steamFriends?.requestFriendInfo(it) }
         }
 
+        /** Request persona info for a specific friend (e.g. when opening their profile). */
+        suspend fun requestFriendInfo(steamId: Long) = withContext(Dispatchers.IO) {
+            instance?._steamFriends?.requestFriendInfo(SteamID(steamId))
+        }
+
+        /**
+         * Send a chat message to a friend. Returns true if the send was accepted.
+         * SteamKit/JavaSteam chat API may not be available; currently a stub.
+         */
+        fun sendFriendMessage(steamId: Long, message: String): Boolean {
+            return instance?.sendFriendMessageInternal(SteamID(steamId), message) ?: false
+        }
+
         /** Request achievements/stats for the logged-in user via SteamKit (no Web API key). */
         suspend fun requestUserStats(appId: Int): UserStatsCallback? = withContext(Dispatchers.IO) {
             instance?.requestUserStatsInternal(appId)
@@ -3117,6 +3130,15 @@ class SteamService : Service(), IChallengeUrlChanged {
                 }
             }
         }
+    }
+
+    /**
+     * Send a chat message to a friend. SteamKit/JavaSteam chat API not yet wired;
+     * returns false until sendMessage (or equivalent) is available on SteamFriends.
+     */
+    private fun sendFriendMessageInternal(steamId: SteamID, message: String): Boolean {
+        // TODO: when JavaSteam SteamFriends exposes sendMessage/sendFriendMessage, call it here
+        return false
     }
 
     private fun onUserStatsReceived(callback: UserStatsCallback) {
