@@ -98,7 +98,7 @@ fun FriendDetailScreen(
                     )
                 }
                 Text(
-                    text = friend?.name?.ifBlank(null) ?: stringResource(R.string.friend_unknown),
+                    text = friend?.name?.takeIf { it.isNotBlank() } ?: stringResource(R.string.friend_unknown),
                     style = MaterialTheme.typography.titleMedium,
                     color = gnTextPrimary,
                 )
