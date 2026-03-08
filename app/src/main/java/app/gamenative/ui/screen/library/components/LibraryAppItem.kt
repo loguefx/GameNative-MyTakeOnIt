@@ -230,8 +230,17 @@ internal fun AppItem(
                     )
                 }
             }
+        } else {
+            // Grid mode: show capsule image and title
+            GridCardContent(
+                appInfo = appInfo,
+                imageRefreshCounter = imageRefreshCounter,
+                compatibilityStatus = compatibilityStatus,
+                isRefreshing = isRefreshing,
+            )
         }
     }
+}
 @Composable
 private fun GridCardContent(
     appInfo: LibraryItem,
