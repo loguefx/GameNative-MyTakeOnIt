@@ -820,6 +820,7 @@ abstract class BaseAppScreen {
             ) {
                 GameSettingsBottomSheet(
                     appId = libraryItem.appId,
+                    gameName = displayInfo.name,
                     onDismiss = { showGameSettingsSheet = false },
                 )
             }

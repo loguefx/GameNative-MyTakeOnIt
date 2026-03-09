@@ -9,6 +9,10 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -22,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.BlendMode.Companion.Screen
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -68,7 +73,11 @@ import app.gamenative.ui.enums.AppOptionMenuType
 import app.gamenative.ui.enums.DialogType
 import app.gamenative.ui.enums.Orientation
 import app.gamenative.ui.model.MainViewModel
+import app.gamenative.ui.enums.HomeDestination
 import app.gamenative.ui.screen.HomeScreen
+import app.gamenative.ui.theme.gnBgDeepest
+import app.gamenative.ui.theme.gnBgSurface
+import app.gamenative.debug.DebugSessionLogger
 import app.gamenative.ui.screen.PluviaScreen
 import app.gamenative.ui.screen.login.UserLoginScreen
 import app.gamenative.config.GameConfigStore
@@ -164,10 +173,15 @@ fun PluviaMain(
                 }
 
                 is MainViewModel.MainUiEvent.ExternalGameLaunch -> {
-                    Timber.i("[PluviaMain]: Received ExternalGameLaunch UI event for app ${event.appId}")
+                    Timber.tag("GameLaunch").i("Received ExternalGameLaunch UI event appId=${event.appId}")
 
                     // Extract game ID from appId (format: "STEAM_<id>" or "CUSTOM_GAME_<id>")
-                    val gameId = ContainerUtils.extractGameIdFromContainerId(event.appId)
+                    val gameId = try {
+                        ContainerUtils.extractGameIdFromContainerId(event.appId)
+                    } catch (e: Throwable) {
+                        Timber.tag("GameLaunch").e(e, "ExternalGameLaunch: extractGameIdFromContainerId failed for appId=${event.appId}")
+                        return@collect
+                    }
 
                     // First check if it's a Steam game and if it's installed
                     val isSteamInstalled = SteamService.isAppInstalled(gameId)
@@ -362,6 +376,18 @@ fun PluviaMain(
 
                 is MainViewModel.MainUiEvent.ShowToast -> {
                     Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                }
+
+                is MainViewModel.MainUiEvent.LaunchFailed -> {
+                    setMessageDialogState(
+                        MessageDialogState(
+                            visible = true,
+                            type = DialogType.SYNC_FAIL,
+                            title = context.getString(R.string.launch_failed_title),
+                            message = event.message,
+                            dismissBtnText = context.getString(R.string.ok),
+                        )
+                    )
                 }
             }
         }
@@ -981,7 +1007,62 @@ fun PluviaMain(
 
         val pendingInvites by inviteViewModel.pendingInvites.collectAsStateWithLifecycle()
         val latestInvite = pendingInvites.firstOrNull()
-        Box(modifier = Modifier.fillMaxSize()) {
+        val showMainBar = state.currentScreen == PluviaScreen.PlayerProfile ||
+            state.currentScreen == PluviaScreen.Chat ||
+            state.currentScreen == PluviaScreen.Achievements
+        Scaffold(
+            containerColor = gnBgDeepest,
+            bottomBar = {
+                if (showMainBar) {
+                    NavigationBar(
+                        containerColor = gnBgSurface,
+                        contentColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
+                    ) {
+                        HomeDestination.entries.forEach { destination ->
+                            val selected = when (state.currentScreen) {
+                                PluviaScreen.PlayerProfile, PluviaScreen.Chat, PluviaScreen.Achievements ->
+                                    destination == HomeDestination.Friends
+                                else -> false
+                            }
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = {
+                                    when (destination) {
+                                        HomeDestination.Library ->
+                                            navController.navigate(PluviaScreen.Home.route + "?offline=false&tab=library") {
+                                                popUpTo(PluviaScreen.Home.route) { inclusive = true }
+                                                launchSingleTop = true
+                                            }
+                                        HomeDestination.Downloads ->
+                                            navController.navigate(PluviaScreen.Home.route + "?offline=false&tab=downloads") {
+                                                popUpTo(PluviaScreen.Home.route) { inclusive = true }
+                                                launchSingleTop = true
+                                            }
+                                        HomeDestination.Friends ->
+                                            navController.navigateUp()
+                                    }
+                                },
+                                icon = {
+                                    androidx.compose.material3.Icon(
+                                        imageVector = destination.icon,
+                                        contentDescription = stringResource(destination.title),
+                                    )
+                                },
+                                label = { androidx.compose.material3.Text(stringResource(destination.title)) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                                    selectedTextColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                                    indicatorColor = androidx.compose.material3.MaterialTheme.colorScheme.primaryContainer,
+                                    unselectedIconColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
+                            )
+                        }
+                    }
+                }
+            },
+        ) { paddingValues ->
+        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
             NavHost(
                 navController = navController,
                 startDestination = PluviaScreen.LoginUser.route,
@@ -998,18 +1079,30 @@ fun PluviaMain(
             /** Library, Downloads, Friends **/
             /** Library, Downloads, Friends **/
             composable(
-                route = PluviaScreen.Home.route + "?offline={offline}",
+                route = PluviaScreen.Home.route + "?offline={offline}&tab={tab}",
                 deepLinks = listOf(navDeepLink { uriPattern = "pluvia://home" }),
                 arguments = listOf(
                     navArgument("offline") {
                         type = NavType.BoolType
                         defaultValue = false // default when the query param isn’t present
                     },
+                    navArgument("tab") {
+                        type = NavType.StringType
+                        defaultValue = "friends"
+                    },
                 ),
             ) { backStackEntry ->
                 val isOffline = backStackEntry.arguments?.getBoolean("offline") ?: false
+                val tabArg = backStackEntry.arguments?.getString("tab") ?: "friends"
+                val initialTab = when (tabArg) {
+                    "library" -> app.gamenative.ui.enums.HomeDestination.Library
+                    "downloads" -> app.gamenative.ui.enums.HomeDestination.Downloads
+                    else -> app.gamenative.ui.enums.HomeDestination.Friends
+                }
                 HomeScreen(
+                    initialTab = initialTab,
                     onClickPlay = { appId, asContainer ->
+                        Timber.tag("GameLaunch").i("Play tapped (Library), appId=$appId asContainer=$asContainer")
                         viewModel.setLaunchedAppId(appId)
                         viewModel.setBootToContainer(asContainer)
                         viewModel.setTestGraphics(false)
@@ -1047,6 +1140,9 @@ fun PluviaMain(
                         PluviaApp.events.emit(AndroidEvent.EndProcess)
                     },
                     onChat = {
+                        // #region agent log
+                        DebugSessionLogger.log("A", "PluviaMain.kt:onChat", "about to navigate to profile", mapOf("steamId" to it), android.util.Log.ERROR)
+                        // #endregion
                         navController.navigate(PluviaScreen.PlayerProfile.route(it))
                     },
                     onNavigateRoute = {
@@ -1069,7 +1165,11 @@ fun PluviaMain(
                     navArgument(PluviaScreen.PlayerProfile.ARG_ID) { type = NavType.StringType },
                 ),
             ) { backStackEntry ->
-                val id = backStackEntry.arguments?.getString(PluviaScreen.PlayerProfile.ARG_ID)?.toLongOrNull() ?: 0L
+                val rawId = backStackEntry.arguments?.getString(PluviaScreen.PlayerProfile.ARG_ID)
+                val id = rawId?.toLongOrNull() ?: 0L
+                // #region agent log
+                DebugSessionLogger.log("A", "PluviaMain.kt:PlayerProfile", "profile composable entry", mapOf("rawId" to rawId, "id" to id))
+                // #endregion
                 app.gamenative.ui.screen.chat.FriendDetailScreen(
                     steamId = id,
                     isProfileOnly = true,
@@ -1225,6 +1325,7 @@ fun PluviaMain(
                 }
             }
         }
+        }
     }
 }
 
@@ -1244,15 +1345,33 @@ fun preLaunchApp(
     isOffline: Boolean = false,
     bootToContainer: Boolean = false,
 ) {
+    Timber.tag("GameLaunch").i("preLaunchApp called appId=$appId (bootToContainer=$bootToContainer)")
     setLoadingDialogVisible(true)
     // TODO: add a way to cancel
     // TODO: add fail conditions
 
-    val gameId = ContainerUtils.extractGameIdFromContainerId(appId)
+    val gameId = try {
+        ContainerUtils.extractGameIdFromContainerId(appId)
+    } catch (e: Throwable) {
+        Timber.tag("GameLaunch").e(e, "preLaunchApp failed extracting gameId from appId=$appId")
+        setLoadingDialogVisible(false)
+        setMessageDialogState(
+            MessageDialogState(
+                visible = true,
+                type = DialogType.SYNC_FAIL,
+                title = context.getString(R.string.launch_failed_title),
+                message = (e.message ?: e.javaClass.simpleName) + "\n\nFilter logcat by 'GameLaunch' for stack trace.",
+                dismissBtnText = context.getString(R.string.ok),
+            )
+        )
+        return
+    }
 
     CoroutineScope(Dispatchers.IO).launch {
+        try {
         // create container if it does not already exist
         // TODO: combine somehow with container creation in HomeLibraryAppScreen
+        Timber.tag("GameLaunch").i("preLaunchApp started appId=$appId")
         val containerManager = ContainerManager(context)
         val container = if (useTemporaryOverride) {
             ContainerUtils.getOrCreateContainerWithOverride(context, appId)
@@ -1288,6 +1407,62 @@ fun preLaunchApp(
                     ),
                 )
                 return@launch
+            }
+
+            // Ensure system image (imagefs/opt) is installed before preflight; otherwise preflight blocks on "runtime not found"
+            val imageFs = ImageFs.find(context)
+            if (!imageFs.isValid()) {
+                setLoadingMessage(context.getString(R.string.main_loading))
+                SplitCompat.install(context)
+                if (!SteamService.isImageFsInstallable(context, container.containerVariant)) {
+                    setLoadingMessage("Downloading first-time files")
+                    SteamService.downloadImageFs(
+                        onDownloadProgress = { setLoadingProgress(it / 1.0f) },
+                        this,
+                        variant = container.containerVariant,
+                        context = context,
+                    ).await()
+                }
+                if (container.containerVariant.equals(Container.GLIBC) &&
+                    !SteamService.isFileInstallable(context, "imagefs_patches_gamenative.tzst")
+                ) {
+                    setLoadingMessage("Downloading Wine")
+                    SteamService.downloadImageFsPatches(
+                        onDownloadProgress = { setLoadingProgress(it / 1.0f) },
+                        this,
+                        context = context,
+                    ).await()
+                } else {
+                    // installWineFromDownloads extracts both bionic entries; ensure both .txz exist
+                    if (!SteamService.isFileInstallable(context, "proton-9.0-arm64ec.txz")) {
+                        setLoadingMessage("Downloading arm64ec Proton")
+                        SteamService.downloadFile(
+                            onDownloadProgress = { setLoadingProgress(it / 1.0f) },
+                            this,
+                            context = context,
+                            "proton-9.0-arm64ec.txz",
+                        ).await()
+                    }
+                    if (!SteamService.isFileInstallable(context, "proton-9.0-x86_64.txz")) {
+                        setLoadingMessage("Downloading x86_64 Proton")
+                        SteamService.downloadFile(
+                            onDownloadProgress = { setLoadingProgress(it / 1.0f) },
+                            this,
+                            context = context,
+                            "proton-9.0-x86_64.txz",
+                        ).await()
+                    }
+                }
+                val installMsg = if (container.containerVariant.equals(Container.GLIBC)) {
+                    context.getString(R.string.main_installing_glibc)
+                } else {
+                    context.getString(R.string.main_installing_bionic)
+                }
+                setLoadingMessage(installMsg)
+                ImageFsInstaller.installIfNeededFuture(context, context.assets, container) { progress ->
+                    setLoadingProgress(progress / 100f)
+                }.get()
+                setLoadingProgress(-1f)
             }
 
             // Deterministic preflight: fail fast with clear reason before starting the game process
@@ -1337,7 +1512,8 @@ fun preLaunchApp(
                     try {
                         ManifestInstaller.installManifestEntry(
                             context, request.entry, request.isDriver, request.contentType,
-                        ) { progress -> setLoadingProgress(progress.coerceIn(0f, 1f)) }
+                            onProgress = { progress -> setLoadingProgress(progress.coerceIn(0f, 1f)) },
+                        )
                     } catch (e: Exception) {
                         Timber.e(e, "Failed to install ${request.entry.name}, continuing")
                     }
@@ -1778,6 +1954,19 @@ fun preLaunchApp(
             SyncResult.UpToDate,
             SyncResult.Success,
             -> onSuccess(context, appId)
+        }
+        } catch (e: Throwable) {
+            setLoadingDialogVisible(false)
+            Timber.tag("GameLaunch").e(e, "preLaunchApp failed appId=$appId")
+            setMessageDialogState(
+                MessageDialogState(
+                    visible = true,
+                    type = DialogType.SYNC_FAIL,
+                    title = context.getString(R.string.launch_failed_title),
+                    message = (e.message ?: e.javaClass.simpleName) + "\n\nFilter logcat by 'GameLaunch' for full stack trace.",
+                    dismissBtnText = context.getString(R.string.ok),
+                )
+            )
         }
     }
 }

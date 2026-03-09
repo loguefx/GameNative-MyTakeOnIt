@@ -3,6 +3,7 @@ package app.gamenative
 import android.os.StrictMode
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.navigation.NavController
+import app.gamenative.debug.DebugSessionLogger
 import app.gamenative.events.AndroidEvent
 import app.gamenative.events.EventDispatcher
 import app.gamenative.service.DownloadService
@@ -99,6 +100,21 @@ class PluviaApp : SplitCompatApplication() {
 
         // Initialize Supabase client
         try {
+            // #region agent log
+            DebugSessionLogger.log(
+                "H_supabase_runtime",
+                "PluviaApp.kt:initSupabase",
+                "BuildConfig Supabase values at runtime",
+                mapOf(
+                    "urlValue" to BuildConfig.SUPABASE_URL,
+                    "urlIsUnset" to (BuildConfig.SUPABASE_URL == "unset"),
+                    "urlBlank" to BuildConfig.SUPABASE_URL.isBlank(),
+                    "keyLength" to BuildConfig.SUPABASE_KEY.length,
+                    "keyIsUnset" to (BuildConfig.SUPABASE_KEY == "unset"),
+                    "keyBlank" to BuildConfig.SUPABASE_KEY.isBlank(),
+                )
+            )
+            // #endregion
             initSupabase()
             Timber.d("Supabase client initialized with URL: ${BuildConfig.SUPABASE_URL}")
         } catch (e: Exception) {

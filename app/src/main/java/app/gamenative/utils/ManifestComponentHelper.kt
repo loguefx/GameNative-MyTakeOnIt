@@ -135,7 +135,8 @@ object ManifestComponentHelper {
         manifest.forEach { entry ->
             if (!options.containsKey(entry.id)) {
                 val isInstalled = availableIds.contains(entry.id)
-                options[entry.id] = VersionOption(entry.id, entry.id, isManifest = true, isInstalled = isInstalled)
+                val label = if (entry.name.isNotBlank()) entry.name else entry.id
+                options[entry.id] = VersionOption(label, entry.id, isManifest = true, isInstalled = isInstalled)
             }
         }
 

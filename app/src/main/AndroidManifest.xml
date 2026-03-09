@@ -21,6 +21,7 @@
     <uses-permission android:name="android.permission.READ_LOGS" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- extractNativeLibs=true: native libs extracted at install for 4 KB and 16 KB page-size compatibility -->
     <application
         android:name=".PluviaApp"
         android:usesCleartextTraffic="true"

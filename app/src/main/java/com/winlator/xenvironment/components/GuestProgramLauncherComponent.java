@@ -207,8 +207,10 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
     }
     public static int exec(Context context, boolean proot32, String[] bindingPaths, EnvVars extraVars, Callback<Integer> terminationCallback, String prootCmd, File workingDir) {
         Log.d("GuestProgramLauncherComponent", "Executing guest program");
-        // Context context = environment.getContext();
-        // ImageFs imageFs = environment.getImageFs();
+        if (!checkProotLibs(context)) {
+            Log.e("GameLaunch", "Aborting exec: libproot.so not available");
+            return -1;
+        }
         ImageFs imageFs = ImageFs.find(context);
         File rootDir = imageFs.getRootDir();
         File tmpDir = XEnvironment.getTmpDir(context);
@@ -397,6 +399,18 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         return "";
     }
 
+    /** Returns true if libproot.so (and loader) exist; logs with GameLaunch tag if missing. */
+    private static boolean checkProotLibs(Context context) {
+        String nativeLibraryDir = context.getApplicationInfo().nativeLibraryDir;
+        File proot = new File(nativeLibraryDir, "libproot.so");
+        File loader = new File(nativeLibraryDir, "libproot-loader.so");
+        if (proot.canExecute() && loader.exists()) return true;
+        Log.e("GameLaunch", "libproot.so missing or not executable at " + proot.getAbsolutePath()
+                + " (exists=" + proot.exists() + " canExecute=" + proot.canExecute() + "); loader exists=" + loader.exists()
+                + ". Rebuild the app with CMake proot enabled (externalNativeBuild in build.gradle.kts).");
+        return false;
+    }
+
     /**
      * Runs a shell command inside the proot container and returns stdout.
      * Used for CPU affinity (pgrep) and other container-internal commands.
@@ -404,6 +418,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
      */
     public static String execInContainerWithOutput(android.content.Context context, boolean proot32,
             String[] bindingPaths, EnvVars extraVars, File workingDir, String shellCommand) {
+        if (!checkProotLibs(context)) return null;
         ImageFs imageFs = ImageFs.find(context);
         File rootDir = imageFs.getRootDir();
         File tmpDir = XEnvironment.getTmpDir(context);

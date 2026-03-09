@@ -1,0 +1,832 @@
+---
+description: Redesigns the Game Settings bottom sheet to be cleaner and more polished than the GameHub reference, and integrates the Wine/Proton version picker (from wine_proton_versions.json + remote manifest) directly into the sheet. Apply when editing GameSettingsBottomSheet, GameProfileOverrides, or any game settings UI.
+globs: ["**/*GameSettings*", "**/*GameProfile*", "**/*BottomSheet*", "**/*Compat*", "**/*Wine*", "**/*Proton*", "**/*Version*"]
+alwaysApply: false
+---
+
+# GameNative — Game Settings Sheet Redesign + Version Picker
+
+## Overview — what this fixes and adds
+
+**Chip problems (fixed).** The root issue was that chips had no fixed height and used `fillMaxWidth()` individually instead of sharing width equally. The new **EqualWidthChipRow** gives every chip **`weight(1f)`** so they all get exactly the same width, and **`height(44.dp)`** is hardcoded so no chip can ever be taller than another. **"Uncapped"** is shown as **"Off"** so it fits in one line — if product requires the full word, use **`widthIn(min = 64.dp)`** as a fallback in the constraints section.
+
+**Version picker in the sheet.** The version picker is built into the sheet directly. There is a new **"Compatibility Layer"** navigation row at the bottom of the Runtime section. Tapping it opens a **second bottom sheet** layered on top of the settings sheet. That inner sheet shows all versions from the **merged manifest** — grouped by source (Proton-GE, Wine, Proton Valve, Wine-GE), with **LATEST** and **RECOMMENDED** badges, installed status, and **Download** buttons for anything not yet installed. The download uses **`launchManifestContentInstall`** — the same install flow already used for every other component — so no new download code is needed.
+
+**Visual hierarchy.** Section headers (Performance, Graphics, Runtime) in small uppercase tertiary text give the sheet structure. Field labels sit directly above their chip rows. The **Save** button uses **`weight(2f)`** so it is visually twice as wide as Cancel, making the primary action obvious. The overall sheet uses **`gnBgDeepest`** background matching the rest of the app instead of a lighter surface.
+
+---
+
+## What's wrong with the current sheet (reference screenshot)
+
+1. Frame cap chips are vertical — "Uncapped" is taller than the others because
+   the text wraps vertically. All chips must be the same height, horizontal text.
+2. Resolution scale chips have inconsistent sizing — 100% is much wider than 50%.
+   All chips must be equal width.
+3. No Proton/Wine version picker — users can't choose which version to use
+   for this game from the settings sheet. This is the most requested missing feature.
+4. No visual hierarchy — everything is the same weight with no grouping.
+5. Cancel/Save buttons at the bottom are fine but Save should be more prominent.
+
+## What the redesigned sheet looks like
+
+```
+┌─────────────────────────────────────────────────────┐
+│  ▬▬▬  (drag handle)                                │
+│                                                     │
+│  Game Settings                                      │
+│  BioShock 2 Remastered                              │
+│                                                     │
+│  ── PERFORMANCE ───────────────────────────────── │
+│                                                     │
+│  Frame cap                                          │
+│  [Uncapped] [30] [45] [60 ✓] [90] [120]            │
+│                                                     │
+│  Resolution scale                                   │
+│  [50%] [75%] [100% ✓] [125%]                       │
+│                                                     │
+│  ── GRAPHICS ──────────────────────────────────── │
+│                                                     │
+│  Async shaders              [●━━━━━━━━━━━━━━━]     │
+│  DX version override                                │
+│  [Auto ✓] [DX9] [DX10] [DX11] [DX12]              │
+│  VSync                      [━━━━━━━━━━━━━━━○]     │
+│                                                     │
+│  ── RUNTIME ───────────────────────────────────── │
+│                                                     │
+│  Wine runtime                                       │
+│  [Stock Wine ✓] [Wine-GE]                          │
+│                                                     │
+│  Compatibility Layer         GE-Proton9-26  ›      │
+│  (tap to pick or download a version)               │
+│                                                     │
+│  ─────────────────────────────────────────────────│
+│             [Cancel]        [  Save  ]             │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## PART 1 — CHIP FIXES (highest priority visual fix)
+
+### Problem: chips have unequal height and width
+
+Fix all chip groups to use `equalWidth` layout so every chip in a row
+is the same size. Use a custom `EqualWidthChipRow` composable:
+
+```kotlin
+@Composable
+fun EqualWidthChipRow(
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.() -> Unit
+) {
+    // Use SubcomposeLayout to measure all chips and give them equal width
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        content()
+    }
+}
+
+// Each chip in the row uses Modifier.weight(1f) so they share space equally
+@Composable
+fun RowScope.SettingsChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    enabled: Boolean = true
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        enabled = enabled,
+        label = {
+            Text(
+                text = label,
+                style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                textAlign = TextAlign.Center,
+                maxLines = 1,           // NEVER allow vertical text wrapping
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        modifier = Modifier
+            .weight(1f)             // equal width for all chips in the row
+            .height(44.dp),         // fixed height — no chip is ever taller
+        shape = RoundedCornerShape(22.dp),
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = gnAccentPrimary,
+            selectedLabelColor     = Color.White,
+            containerColor         = gnBgElevated,
+            labelColor             = gnTextSecondary,
+            disabledContainerColor = gnBgSurface,
+            disabledLabelColor     = gnTextTertiary
+        ),
+        border = FilterChipDefaults.filterChipBorder(
+            enabled         = enabled,
+            selected        = selected,
+            borderColor     = gnBorderCard,
+            selectedBorderColor = Color.Transparent,
+            borderWidth     = 1.dp
+        )
+    )
+}
+```
+
+### Frame cap — fixed
+
+```kotlin
+// Section label
+SettingsSectionLabel("Frame cap")
+
+EqualWidthChipRow {
+    // "Uncapped" with short label — never vertical
+    SettingsChip("Off",    selected = config.fpsLimit == 0,   onClick = { update(0) })
+    SettingsChip("30",     selected = config.fpsLimit == 30,  onClick = { update(30) })
+    SettingsChip("45",     selected = config.fpsLimit == 45,  onClick = { update(45) })
+    SettingsChip("60",     selected = config.fpsLimit == 60,  onClick = { update(60) })
+    SettingsChip("90",     selected = config.fpsLimit == 90,  onClick = { update(90) })
+    SettingsChip("120",    selected = config.fpsLimit == 120, onClick = { update(120) })
+}
+// Note: "Uncapped" becomes "Off" — short enough to never wrap
+// If "Uncapped" label is required by design, increase chip minWidth instead:
+// Modifier.weight(1f).widthIn(min = 52.dp).height(44.dp)
+```
+
+### Resolution scale — fixed
+
+```kotlin
+SettingsSectionLabel("Resolution scale")
+
+EqualWidthChipRow {
+    SettingsChip("50%",  selected = config.resolutionScale == 0.5f,  onClick = { update(0.5f) })
+    SettingsChip("75%",  selected = config.resolutionScale == 0.75f, onClick = { update(0.75f) })
+    SettingsChip("100%", selected = config.resolutionScale == 1.0f,  onClick = { update(1.0f) })
+    SettingsChip("125%", selected = config.resolutionScale == 1.25f, onClick = { update(1.25f) })
+}
+```
+
+### DX version override — fixed
+
+```kotlin
+SettingsSectionLabel("DX version override")
+
+EqualWidthChipRow {
+    SettingsChip("Auto",  selected = config.dxVersion == DxVersion.AUTO,  onClick = { update(DxVersion.AUTO) })
+    SettingsChip("DX9",   selected = config.dxVersion == DxVersion.DX9,   onClick = { update(DxVersion.DX9) })
+    SettingsChip("DX10",  selected = config.dxVersion == DxVersion.DX10,  onClick = { update(DxVersion.DX10) })
+    SettingsChip("DX11",  selected = config.dxVersion == DxVersion.DX11,  onClick = { update(DxVersion.DX11) })
+    SettingsChip("DX12",  selected = config.dxVersion == DxVersion.DX12,  onClick = { update(DxVersion.DX12) })
+}
+```
+
+### Wine runtime — fixed
+
+```kotlin
+SettingsSectionLabel("Wine runtime")
+
+// Only 2 options — use half-width chips with more padding
+Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(8.dp)
+) {
+    SettingsChip(
+        label    = "Stock Wine",
+        selected = config.wineRuntime == WineRuntime.STOCK,
+        onClick  = { update(WineRuntime.STOCK) },
+        modifier = Modifier.weight(1f).height(44.dp)
+    )
+    SettingsChip(
+        label    = "Wine-GE",
+        selected = config.wineRuntime == WineRuntime.WINE_GE,
+        onClick  = { update(WineRuntime.WINE_GE) },
+        modifier = Modifier.weight(1f).height(44.dp)
+    )
+}
+```
+
+---
+
+## PART 2 — VERSION PICKER ROW (new addition)
+
+Add this row directly below the Wine runtime chips in the Runtime section.
+It shows the currently active Proton/Wine version for this game and opens
+a version picker sheet on tap.
+
+```kotlin
+// Version picker navigation row — below Wine runtime chips
+Spacer(Modifier.height(4.dp))
+VersionPickerRow(
+    label        = "Compatibility Layer",
+    currentValue = activeVersion?.displayName ?: "Default",
+    onClick      = { showVersionPicker = true }
+)
+```
+
+```kotlin
+@Composable
+fun VersionPickerRow(
+    label: String,
+    currentValue: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(gnBgElevated)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = label,
+                style = PluviaTypography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = gnTextPrimary
+            )
+            Text(
+                text = "Tap to pick or download a version",
+                style = PluviaTypography.bodySmall,
+                color = gnTextTertiary
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = currentValue,
+                style = PluviaTypography.bodySmall,
+                color = gnTextSecondary,
+                maxLines = 1
+            )
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = gnTextTertiary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+```
+
+---
+
+## PART 3 — VERSION PICKER BOTTOM SHEET
+
+Opens when the user taps the Compatibility Layer row.
+Shows all versions from the merged manifest (remote + wine_proton_versions.json).
+Groups by source. Installed versions are selectable immediately.
+Not-installed versions show a Download button.
+
+```kotlin
+@Composable
+fun VersionPickerSheet(
+    appId: Int,
+    currentVersion: String?,
+    versions: List<MergedVersionEntry>,   // from ManifestRepository merged list
+    downloadProgress: Map<String, Float>,
+    onSelect: (MergedVersionEntry) -> Unit,
+    onDownload: (MergedVersionEntry) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor   = gnBgSurface,
+        sheetState       = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        dragHandle       = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 12.dp, bottom = 8.dp)
+                    .size(width = 36.dp, height = 4.dp)
+                    .background(gnTextTertiary.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
+            )
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+        ) {
+            // Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Compatibility Layer",
+                    style = PluviaTypography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = gnTextPrimary
+                )
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, null, tint = gnTextTertiary)
+                }
+            }
+            Divider(color = gnDivider)
+
+            // Grouped version list
+            LazyColumn(
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) {
+                // Group by source type
+                val grouped = versions.groupBy { it.sourceGroup }
+
+                grouped.forEach { (group, entries) ->
+                    item {
+                        // Group header
+                        Text(
+                            text = group.uppercase(),
+                            style = PluviaTypography.labelSmall.copy(
+                                letterSpacing = 0.10.sp,
+                                fontWeight = FontWeight.Bold
+                            ),
+                            color = gnTextTertiary,
+                            modifier = Modifier.padding(
+                                start = 20.dp, end = 20.dp,
+                                top = 16.dp, bottom = 4.dp
+                            )
+                        )
+                    }
+
+                    items(entries) { entry ->
+                        VersionPickerItem(
+                            entry            = entry,
+                            isCurrent        = entry.id == currentVersion,
+                            progress         = downloadProgress[entry.id],
+                            onSelect         = {
+                                if (entry.isInstalled) {
+                                    onSelect(entry)
+                                    onDismiss()
+                                }
+                            },
+                            onDownload       = { onDownload(entry) }
+                        )
+                    }
+                }
+
+                item { Spacer(Modifier.height(16.dp)) }
+            }
+        }
+    }
+}
+
+@Composable
+fun VersionPickerItem(
+    entry: MergedVersionEntry,
+    isCurrent: Boolean,
+    progress: Float?,
+    onSelect: () -> Unit,
+    onDownload: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = entry.isInstalled, onClick = onSelect)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Left: name + badges
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = entry.displayName,
+                    style = PluviaTypography.bodyMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (entry.isInstalled) gnTextPrimary else gnTextTertiary
+                    )
+                )
+                if (entry.isLatest) {
+                    MiniVersionBadge("LATEST", gnNeonTeal)
+                }
+                if (entry.isRecommended) {
+                    MiniVersionBadge("RECOMMENDED", gnAccentGlow)
+                }
+            }
+            if (!entry.isInstalled) {
+                Text(
+                    text = "%.0f MB · Tap Download to install".format(entry.sizeMb),
+                    style = PluviaTypography.labelSmall,
+                    color = gnTextTertiary
+                )
+            } else {
+                Text(
+                    text = "Installed",
+                    style = PluviaTypography.labelSmall,
+                    color = gnNeonTeal
+                )
+            }
+        }
+
+        Spacer(Modifier.width(12.dp))
+
+        // Right: action
+        when {
+            isCurrent -> {
+                Icon(
+                    Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = gnNeonTeal,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            progress != null -> {
+                Box(
+                    modifier = Modifier.size(40.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.size(34.dp),
+                        color = gnAccentPrimary,
+                        strokeWidth = 3.dp,
+                        trackColor = gnBgOverlay
+                    )
+                    Text(
+                        text = "${(progress * 100).toInt()}%",
+                        style = PluviaTypography.labelSmall.copy(fontSize = 8.sp),
+                        color = gnTextPrimary
+                    )
+                }
+            }
+            entry.isInstalled -> {
+                OutlinedButton(
+                    onClick = onSelect,
+                    border = BorderStroke(1.dp, gnBorderCard),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = gnTextSecondary),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    modifier = Modifier.height(34.dp)
+                ) {
+                    Text("Use", style = PluviaTypography.labelMedium)
+                }
+            }
+            else -> {
+                OutlinedButton(
+                    onClick = onDownload,
+                    border = BorderStroke(1.dp, gnAccentPrimary.copy(alpha = 0.6f)),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = gnAccentPrimary),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    modifier = Modifier.height(34.dp)
+                ) {
+                    Icon(Icons.Default.Download, null, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Download", style = PluviaTypography.labelMedium)
+                }
+            }
+        }
+    }
+
+    // Download progress bar
+    if (progress != null) {
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp),
+            color = gnAccentPrimary,
+            trackColor = Color.Transparent
+        )
+    }
+}
+
+@Composable
+fun MiniVersionBadge(label: String, color: Color) {
+    Box(
+        modifier = Modifier
+            .background(color.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+            .border(0.5.dp, color.copy(alpha = 0.35f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 5.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = label,
+            style = PluviaTypography.labelSmall.copy(
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold
+            ),
+            color = color
+        )
+    }
+}
+```
+
+---
+
+## PART 4 — FULL REDESIGNED BOTTOM SHEET
+
+Complete replacement for the Game Settings bottom sheet.
+
+```kotlin
+@Composable
+fun GameSettingsBottomSheet(
+    appId: Int,
+    gameName: String,
+    initialConfig: GameProfileOverrides,
+    mergedVersions: List<MergedVersionEntry>,   // from ManifestRepository
+    activeVersion: MergedVersionEntry?,
+    onSave: (GameProfileOverrides) -> Unit,
+    onDismiss: () -> Unit,
+    viewModel: GameSettingsSheetViewModel = hiltViewModel()
+) {
+    var config by remember { mutableStateOf(initialConfig) }
+    var showVersionPicker by remember { mutableStateOf(false) }
+    val downloadProgress by viewModel.downloadProgress.collectAsState()
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor   = gnBgDeepest,
+        sheetState       = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        dragHandle       = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 12.dp, bottom = 4.dp)
+                    .size(width = 36.dp, height = 4.dp)
+                    .background(gnTextTertiary.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
+            )
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+        ) {
+            // ── Header ──────────────────────────────────────────────────
+            Column(
+                modifier = Modifier.padding(
+                    start = 20.dp, end = 20.dp,
+                    top = 8.dp, bottom = 16.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "Game Settings",
+                    style = PluviaTypography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                    color = gnTextPrimary
+                )
+                Text(
+                    text = gameName,
+                    style = PluviaTypography.bodyMedium,
+                    color = gnTextSecondary
+                )
+            }
+
+            // ── Scrollable content ───────────────────────────────────────
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+
+                // ── PERFORMANCE section ──────────────────────────────────
+                SettingsSectionLabel("Performance")
+
+                // Frame cap
+                SettingsFieldLabel("Frame cap")
+                EqualWidthChipRow {
+                    SettingsChip("Off",  config.frameCap == 0,   { config = config.copy(frameCap = 0) })
+                    SettingsChip("30",   config.frameCap == 30,  { config = config.copy(frameCap = 30) })
+                    SettingsChip("45",   config.frameCap == 45,  { config = config.copy(frameCap = 45) })
+                    SettingsChip("60",   config.frameCap == 60,  { config = config.copy(frameCap = 60) })
+                    SettingsChip("90",   config.frameCap == 90,  { config = config.copy(frameCap = 90) })
+                    SettingsChip("120",  config.frameCap == 120, { config = config.copy(frameCap = 120) })
+                }
+
+                // Resolution scale
+                SettingsFieldLabel("Resolution scale")
+                EqualWidthChipRow {
+                    SettingsChip("50%",  config.resolutionScale == 0.5f,  { config = config.copy(resolutionScale = 0.5f) })
+                    SettingsChip("75%",  config.resolutionScale == 0.75f, { config = config.copy(resolutionScale = 0.75f) })
+                    SettingsChip("100%", config.resolutionScale == 1.0f,  { config = config.copy(resolutionScale = 1.0f) })
+                    SettingsChip("125%", config.resolutionScale == 1.25f, { config = config.copy(resolutionScale = 1.25f) })
+                }
+
+                // ── GRAPHICS section ─────────────────────────────────────
+                SettingsSectionLabel("Graphics")
+
+                // Async shaders toggle
+                SettingsToggleRow(
+                    label   = "Async shaders",
+                    checked = config.asyncShaders,
+                    onToggle = { config = config.copy(asyncShaders = it) }
+                )
+
+                // DX version
+                SettingsFieldLabel("DX version override")
+                EqualWidthChipRow {
+                    SettingsChip("Auto",  config.dxVersionOverride == DxVersion.AUTO,  { config = config.copy(dxVersionOverride = DxVersion.AUTO) })
+                    SettingsChip("DX9",   config.dxVersionOverride == DxVersion.DX9,   { config = config.copy(dxVersionOverride = DxVersion.DX9) })
+                    SettingsChip("DX10",  config.dxVersionOverride == DxVersion.DX10,  { config = config.copy(dxVersionOverride = DxVersion.DX10) })
+                    SettingsChip("DX11",  config.dxVersionOverride == DxVersion.DX11,  { config = config.copy(dxVersionOverride = DxVersion.DX11) })
+                    SettingsChip("DX12",  config.dxVersionOverride == DxVersion.DX12,  { config = config.copy(dxVersionOverride = DxVersion.DX12) })
+                }
+
+                // VSync toggle
+                SettingsToggleRow(
+                    label    = "VSync",
+                    checked  = config.vsync,
+                    onToggle = { config = config.copy(vsync = it) }
+                )
+
+                // ── RUNTIME section ──────────────────────────────────────
+                SettingsSectionLabel("Runtime")
+
+                // Wine runtime
+                SettingsFieldLabel("Wine runtime")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SettingsChip(
+                        label    = "Stock Wine",
+                        selected = config.wineRuntime == WineRuntime.STOCK,
+                        onClick  = { config = config.copy(wineRuntime = WineRuntime.STOCK) },
+                        modifier = Modifier.weight(1f).height(44.dp)
+                    )
+                    SettingsChip(
+                        label    = "Wine-GE",
+                        selected = config.wineRuntime == WineRuntime.WINE_GE,
+                        onClick  = { config = config.copy(wineRuntime = WineRuntime.WINE_GE) },
+                        modifier = Modifier.weight(1f).height(44.dp)
+                    )
+                }
+
+                // Compatibility layer version picker row
+                VersionPickerRow(
+                    label        = "Compatibility Layer",
+                    currentValue = activeVersion?.displayName ?: "Default",
+                    onClick      = { showVersionPicker = true }
+                )
+
+                Spacer(Modifier.height(4.dp))
+            }
+
+            // ── Footer: Cancel + Save ────────────────────────────────────
+            Divider(color = gnDivider)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                    border = BorderStroke(1.dp, gnBorderCard),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = gnTextSecondary)
+                ) {
+                    Text("Cancel", style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.SemiBold))
+                }
+                Button(
+                    onClick = { onSave(config); onDismiss() },
+                    modifier = Modifier
+                        .weight(2f)   // Save is wider than Cancel
+                        .height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = gnAccentPrimary),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        "Save",
+                        style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+        }
+    }
+
+    // Version picker sheet — shown over the settings sheet
+    if (showVersionPicker) {
+        VersionPickerSheet(
+            appId            = appId,
+            currentVersion   = activeVersion?.id,
+            versions         = mergedVersions,
+            downloadProgress = downloadProgress,
+            onSelect         = { entry ->
+                viewModel.setActiveVersion(appId, entry)
+                showVersionPicker = false
+            },
+            onDownload       = { entry -> viewModel.downloadVersion(entry) },
+            onDismiss        = { showVersionPicker = false }
+        )
+    }
+}
+```
+
+---
+
+## PART 5 — HELPER COMPOSABLES
+
+```kotlin
+// Section header — bold label with line
+@Composable
+fun SettingsSectionLabel(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = PluviaTypography.labelSmall.copy(
+            letterSpacing = 0.08.sp,
+            fontWeight    = FontWeight.Bold
+        ),
+        color = gnTextTertiary
+    )
+}
+
+// Field label — sits above a chip row
+@Composable
+fun SettingsFieldLabel(text: String) {
+    Text(
+        text  = text,
+        style = PluviaTypography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+        color = gnTextPrimary
+    )
+}
+
+// Toggle row — label on left, Switch on right
+@Composable
+fun SettingsToggleRow(
+    label: String,
+    checked: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text  = label,
+            style = PluviaTypography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+            color = gnTextPrimary
+        )
+        Switch(
+            checked  = checked,
+            onCheckedChange = onToggle,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor      = Color.White,
+                checkedTrackColor      = gnAccentPrimary,
+                uncheckedThumbColor    = gnTextSecondary,
+                uncheckedTrackColor    = gnBgElevated,
+                uncheckedBorderColor   = gnBorderCard
+            )
+        )
+    }
+}
+```
+
+---
+
+## PART 6 — DATA MODEL FOR MERGED VERSIONS
+
+```kotlin
+// Represents one entry from the merged manifest
+// (either from remote GitHub manifest or wine_proton_versions.json)
+data class MergedVersionEntry(
+    val id: String,             // unique id, e.g. "proton-8.0-arm64ec"
+    val displayName: String,    // shown in UI, e.g. "Proton 8.0 (arm64ec)"
+    val sourceGroup: String,    // "Proton-GE", "Wine", "Proton (Valve)", etc.
+    val downloadUrl: String,
+    val sizeMb: Float,
+    val isInstalled: Boolean,
+    val isLatest: Boolean,
+    val isRecommended: Boolean
+)
+// ManifestRepository.getMergedVersionList(appId) returns List<MergedVersionEntry>
+// It reads from the merged manifest (remote + wine_proton_versions.json assets)
+// and marks isInstalled by checking Room / installed paths.
+// It marks isRecommended by calling GameConfigRecommender.recommendedProtonVersion(hardware).
+```
+
+---
+
+## DESIGN CONSTRAINTS
+
+- All chips: `Modifier.weight(1f).height(44.dp)` — equal width, fixed height, text never wraps
+- "Uncapped" → "Off" to fit in one chip cell. If product requires "Uncapped", use `widthIn(min=64.dp)` instead of `weight(1f)` for that chip only
+- Section labels: gnTextTertiary, 11sp, uppercase, bold, letterSpacing 0.08sp
+- Field labels: gnTextPrimary, bodyMedium, medium weight, directly above chip row
+- Toggle rows: bodyMedium label left, Switch right, gnAccentPrimary checked track
+- Version picker row: gnBgElevated background, rounded 10dp, chevron right icon
+- Version picker sheet: ModalBottomSheet over the settings sheet (z-order handled by Compose)
+- Save button: weight(2f) so it is visually twice as wide as Cancel — makes it the primary action
+- Cancel: outlined gnBorderCard — secondary, low prominence
+- No new colors — only existing gn_* tokens
+- Fonts: GameNativeFontFamily (Outfit) via PluviaTypography everywhere
+- downloadVersion in ViewModel triggers ManifestInstaller's existing install flow
+  (launchManifestContentInstall) — do not write a new download path
+- After any Turnip/Mesa/Proton install completes, call HardwareProfileCache.invalidate(context)

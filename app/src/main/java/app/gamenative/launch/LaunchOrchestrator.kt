@@ -41,6 +41,7 @@ object LaunchOrchestrator {
         prefixPath: String,
         defaultProfileId: String? = null,
     ): PreflightResult {
+        Timber.tag("GameLaunch").i("runPreflight appId=$appId prefixPath=$prefixPath gameBinaryPath=${gameBinaryPath?.takeLast(80) ?: "null"}")
         val profile = ProfileStore.resolveForGame(context, appId, defaultProfileId)
         val result = PreflightRunner.run(
             context = context,
@@ -50,8 +51,12 @@ object LaunchOrchestrator {
             appId = appId,
         )
         if (result is PreflightResult.Blocked) {
+            val blocked = result as PreflightResult.Blocked
+            Timber.tag("GameLaunch").w("Preflight blocked: ${blocked.reason} (code=${blocked.code})")
             val diagnostic = LaunchSupervisor.diagnosticFromPreflight(result.reason, result.code)
             DiagnosticStore.save(context, diagnostic, appId)
+        } else {
+            Timber.tag("GameLaunch").i("Preflight passed for appId=$appId")
         }
         return result
     }

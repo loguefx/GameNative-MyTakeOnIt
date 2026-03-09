@@ -81,6 +81,7 @@
     <string name="not_enough_space">Not Enough Space</string>
     <string name="proceed">Proceed</string>
     <string name="cancel">Cancel</string>
+    <string name="back">Back</string>
     <string name="untitled">Untitled</string>
     <string name="confirm_delete">Confirm Deletion</string>
     <string name="destination_library">Library</string>
@@ -115,6 +116,7 @@
     <string name="achievements_filter_locked">Locked</string>
     <string name="achievements_empty_title">No achievements yet</string>
     <string name="achievements_empty_subtitle">Sign in to Steam or add a Steam Web API key in settings to load achievements.</string>
+    <string name="achievements_no_description">No description available.</string>
     <string name="friend_hours">%s hrs</string>
 
     <!-- Custom Games -->
@@ -188,6 +190,7 @@
     <string name="game_executable_not_found_title">Cannot Launch</string>
     <string name="game_executable_not_found">The executable could not be auto-selected. Please set the executable path in container settings.</string>
     <string name="preflight_blocked_title">Launch blocked</string>
+    <string name="launch_failed_title">Launch failed</string>
     <string name="diagnostics_last_run_title">Last run</string>
     <string name="diagnostics_stderr_label">Last stderr lines</string>
     <string name="save_container_settings_title">Save Container Configuration?</string>
@@ -1068,4 +1071,7 @@
     <string name="game_settings_dx_override">DX version override</string>
     <string name="game_settings_dx_auto">Auto</string>
     <string name="game_settings_save">Save</string>
+    <string name="game_settings_performance_section">Performance</string>
+    <string name="game_settings_graphics_section">Graphics</string>
+    <string name="game_settings_runtime_section">Runtime</string>
 </resources>

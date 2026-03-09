@@ -2036,7 +2036,7 @@ private fun setupXEnvironment(
     guestProgramLauncherComponent.envVars = envVars
     guestProgramLauncherComponent.setTerminationCallback { status ->
         if (status != 0) {
-            Timber.e("Guest program terminated with status: $status")
+            Timber.tag("GameLaunch").e("Guest program terminated with exit status: $status (game/Wine process crashed or was killed)")
             onGameLaunchError?.invoke("Game terminated with error status: $status")
             navigateBack()
         }
@@ -2059,27 +2059,16 @@ private fun setupXEnvironment(
         }
     }
 
-    // Log container settings before starting
+    // Log container settings before starting (use GameLaunch tag for logcat filtering)
     if (container != null) {
-        Timber.i("---- Launching Container ----")
-        Timber.i("ID: ${container.id}")
-        Timber.i("Name: ${container.name}")
-        Timber.i("Screen Size: ${container.screenSize}")
-        Timber.i("Graphics Driver: ${container.graphicsDriver}")
-        Timber.i("DX Wrapper: ${container.dxWrapper} (Config: '${container.dxWrapperConfig}')")
-        Timber.i("Audio Driver: ${container.audioDriver}")
-        Timber.i("WoW64 Mode: ${container.isWoW64Mode}")
-        Timber.i("Box64 Version: ${container.box64Version}")
-        Timber.i("Box64 Preset: ${container.box64Preset}")
-        Timber.i("Box86 Version: ${container.box86Version}")
-        Timber.i("Box86 Preset: ${container.box86Preset}")
-        Timber.i("FEXCore Preset: ${container.fexCorePreset}")
-        Timber.i("CPU List: ${container.cpuList}")
-        Timber.i("CPU List WoW64: ${container.cpuListWoW64}")
-        Timber.i("Env Vars (Container Base): ${container.envVars}") // Log base container vars
-        Timber.i("Env Vars (Final Guest): ${envVars.toString()}")   // Log the actual env vars being passed
-        Timber.i("Guest Executable: ${guestProgramLauncherComponent.guestExecutable}") // Log the command
-        Timber.i("---------------------------")
+        Timber.tag("GameLaunch").i("---- Launching Container ----")
+        Timber.tag("GameLaunch").i("ID: ${container.id}")
+        Timber.tag("GameLaunch").i("Name: ${container.name} wineVersion: ${container.wineVersion}")
+        Timber.tag("GameLaunch").i("Screen Size: ${container.screenSize} Graphics: ${container.graphicsDriver}")
+        Timber.tag("GameLaunch").i("DX Wrapper: ${container.dxWrapper} (Config: '${container.dxWrapperConfig}')")
+        Timber.tag("GameLaunch").i("Audio: ${container.audioDriver} WoW64: ${container.isWoW64Mode}")
+        Timber.tag("GameLaunch").i("Guest Executable: ${guestProgramLauncherComponent.guestExecutable}")
+        Timber.tag("GameLaunch").i("---------------------------")
     }
 
     // Request encrypted app ticket for Steam games at launch time
@@ -2100,6 +2089,7 @@ private fun setupXEnvironment(
         }
     }
 
+    Timber.tag("GameLaunch").i("Starting game environment (startEnvironmentComponents)")
     environment.startEnvironmentComponents()
 
     // Task 1 — CPU affinity: pin Wine process to P-cores inside container (Bionic/proot only)

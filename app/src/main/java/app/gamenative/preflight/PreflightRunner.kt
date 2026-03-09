@@ -2,6 +2,7 @@ package app.gamenative.preflight
 
 import android.app.ActivityManager
 import android.content.Context
+import app.gamenative.R
 import app.gamenative.compat.CompatibilityDb
 import app.gamenative.isolation.GamePaths
 import app.gamenative.profile.GameProfileStore
@@ -9,6 +10,8 @@ import app.gamenative.profile.LaunchProfile
 import app.gamenative.profile.WineRuntime
 import com.winlator.xenvironment.ImageFs
 import java.io.File
+import org.json.JSONObject
+import android.util.Log
 import timber.log.Timber
 
 /**
@@ -48,8 +51,36 @@ object PreflightRunner {
 
     /** Crash cause 2 — Wine prefix must exist and contain at least user.reg (valid prefix). */
     private fun checkWinePrefix(context: Context, prefixPath: String): PreflightResult? {
-        val imageFs = ImageFs.find(context)
-        val winePrefixDir = File(imageFs.wineprefix)
+        // Caller passes container.rootDir. Container layout puts the wine prefix at rootDir/.wine
+        // (see Container.getDesktopPath(), getStartMenuPath()). ImageFs uses home/xuser/.wine only
+        // for the default imagefs root, not for per-container roots.
+        val winePrefixDir = File(prefixPath, ".wine")
+        // #region agent log
+        val containerLayoutWineDir = File(prefixPath, ".wine")
+        try {
+            val logFile = File(context.filesDir, "debug_6f24d2.log")
+            val payload = JSONObject().apply {
+                put("sessionId", "6f24d2")
+                put("hypothesisId", "H2")
+                put("location", "PreflightRunner.kt:checkWinePrefix")
+                put("message", "Wine prefix path check")
+                put("timestamp", System.currentTimeMillis())
+                put("data", JSONObject().apply {
+                    put("prefixPath", prefixPath)
+                    put("winePrefixDirPath", winePrefixDir.absolutePath)
+                    put("winePrefixDirIsDir", winePrefixDir.isDirectory)
+                    put("containerLayoutPath", containerLayoutWineDir.absolutePath)
+                    put("containerLayoutIsDir", containerLayoutWineDir.isDirectory)
+                    put("userRegCurrentPath", File(winePrefixDir, "user.reg").canRead())
+                    put("systemRegCurrentPath", File(winePrefixDir, "system.reg").canRead())
+                    put("userRegContainerPath", File(containerLayoutWineDir, "user.reg").canRead())
+                    put("systemRegContainerPath", File(containerLayoutWineDir, "system.reg").canRead())
+                })
+            }
+            logFile.appendText(payload.toString() + "\n")
+            Log.d("DEBUG_6f24d2", payload.toString())
+        } catch (_: Exception) { }
+        // #endregion
         if (!winePrefixDir.isDirectory) {
             return PreflightResult.Blocked(
                 reason = "Wine prefix is missing or invalid. The prefix directory does not exist. Re-create the container or run container setup.",
@@ -91,10 +122,66 @@ object PreflightRunner {
             )
         }
         val wineDir = File(winePath)
-        val wineBin = File(wineDir, "bin/wine")
-        if (!wineDir.exists() || !wineBin.exists()) {
+        fun hasWineBin(dir: File): Boolean =
+            File(dir, "bin/wine").exists() || File(dir, "bin/wine64").exists()
+        val wineBinOk = wineDir.exists() && hasWineBin(wineDir)
+        if (!wineBinOk) {
+            // Fallback: default opt/wine may be missing while imagefs has Wine under opt/<version> (e.g. opt/proton-9.0-x86_64)
+            val rootDir = imageFs.rootDir
+            val optDir = File(rootDir, "opt")
+            val optSubdirs = optDir.listFiles()?.map { it.name }?.toList() ?: emptyList()
+            val bionicEntries = context.resources.getStringArray(R.array.bionic_wine_entries).toList()
+            var fallbackPath: String? = null
+            if (optDir.isDirectory) {
+                for (entry in bionicEntries) {
+                    val candidate = File(optDir, entry)
+                    if (hasWineBin(candidate)) {
+                        fallbackPath = candidate.absolutePath
+                        break
+                    }
+                }
+                if (fallbackPath == null) {
+                    optDir.listFiles()?.forEach { sub ->
+                        if (sub.isDirectory && hasWineBin(sub)) {
+                            fallbackPath = sub.absolutePath
+                            return@forEach
+                        }
+                    }
+                }
+            }
+            // #region agent log
+            try {
+                val payload = JSONObject().apply {
+                    put("sessionId", "6f24d2")
+                    put("hypothesisId", "H_wine_runtime")
+                    put("location", "PreflightRunner.kt:checkWineRuntimePath")
+                    put("message", "Wine runtime path check failed")
+                    put("timestamp", System.currentTimeMillis())
+                    put("data", JSONObject().apply {
+                        put("winePath", winePath)
+                        put("rootDir", rootDir.absolutePath)
+                        put("optDirExists", optDir.exists())
+                        put("optDirIsDir", optDir.isDirectory)
+                        put("optSubdirs", org.json.JSONArray(optSubdirs))
+                        put("bionicEntries", org.json.JSONArray(bionicEntries))
+                        put("fallbackPath", fallbackPath)
+                    })
+                }
+                Log.d("DEBUG_6f24d2", payload.toString())
+                File(context.filesDir, "debug_6f24d2.log").appendText(payload.toString() + "\n")
+            } catch (_: Exception) { }
+            // #endregion
+            if (fallbackPath != null) {
+                imageFs.setWinePath(fallbackPath)
+                return null
+            }
+            val reason = if (!optDir.exists()) {
+                "Proton/Wine runtime is not installed: the system image directory (imagefs/opt) is missing. Install the system image: open the app, go to the container or game that needs it, and follow the prompt to install system files / run container setup."
+            } else {
+                "Proton/Wine runtime not found at $winePath. Install the system image (Component settings) or install Wine/Proton from Settings → Wine/Proton Manager and select it in your container."
+            }
             return PreflightResult.Blocked(
-                reason = "Proton/Wine runtime not found at $winePath. Reinstall the compatibility layer in Component settings.",
+                reason = reason,
                 code = PreflightCode.PROTON_PATH_NOT_FOUND,
             )
         }

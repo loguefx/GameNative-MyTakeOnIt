@@ -31,6 +31,14 @@ val keystoreProperties: Properties? = if (keystorePropertiesFile.exists()) {
     }
 } else null
 
+// Load local.properties so STEAM_WEB_API_KEY, SUPABASE_*, etc. work when set there (per README).
+val localPropertiesFile = rootProject.file("local.properties")
+val localProperties: Properties? = if (localPropertiesFile.exists()) {
+    Properties().apply {
+        load(localPropertiesFile.inputStream())
+    }
+} else null
+
 // Add PostHog API key and host as build-time variables
 val posthogApiKey: String = project.findProperty("POSTHOG_API_KEY") as String? ?: System.getenv("POSTHOG_API_KEY") ?: ""
 val posthogHost: String = project.findProperty("POSTHOG_HOST") as String? ?: System.getenv("POSTHOG_HOST") ?: "https://us.i.posthog.com"
@@ -72,7 +80,8 @@ android {
 
         buildConfigField("boolean", "GOLD", "false")
         fun secret(name: String): String {
-            val raw = project.findProperty(name) as String? ?: System.getenv(name) ?: ""
+            val fromLocal = localProperties?.getProperty(name)?.trim()?.takeIf { it.isNotEmpty() }
+            val raw = fromLocal ?: (project.findProperty(name) as String?) ?: System.getenv(name) ?: ""
             return when (name) {
                 "POSTHOG_HOST" -> if (raw.isBlank()) "https://us.i.posthog.com" else raw
                 "SUPABASE_URL", "SUPABASE_KEY" -> raw
@@ -206,8 +215,9 @@ android {
             excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
         }
         jniLibs {
-            // 'extractNativeLibs' was not enough to keep the jniLibs and
-            // the libs went missing after adding on-demand feature delivery
+            // Compress .so in APK; with android:extractNativeLibs="true" they are
+            // extracted at install so the app works on both 4 KB and 16 KB page-size devices
+            // (required for prebuilt Winlator/container native libs that are not 16 KB-aligned).
             useLegacyPackaging = true
         }
     }
@@ -230,13 +240,14 @@ android {
     //     }
     // }
 
-    // cmake on release builds a proot that fails to process ld-2.31.so
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/CMakeLists.txt")
-    //         version = "3.22.1"
-    //     }
-    // }
+    // Proot and winlator native libs (libproot.so required for Bionic/game launch).
+    // If release builds fail with proot/ld-2.31.so issues, restrict to debugOnly.
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 
     // (For now) Uncomment for LeakCanary to work.
     // configurations {
@@ -386,6 +397,21 @@ gradle.projectsLoaded {
 }
 project.afterEvaluate {
     try {
+        // #region agent log – Supabase BuildConfig resolution (session 6f24d2)
+        val secretForLog: (String) -> String = { name ->
+            val fromLocal = localProperties?.getProperty(name)?.trim()?.takeIf { it.isNotEmpty() }
+            val raw = fromLocal ?: (project.findProperty(name) as String?) ?: System.getenv(name) ?: ""
+            when (name) {
+                "POSTHOG_HOST" -> if (raw.isBlank()) "https://us.i.posthog.com" else raw
+                "SUPABASE_URL", "SUPABASE_KEY" -> raw
+                else -> raw
+            }
+        }
+        val supabaseUrlResolved = secretForLog("SUPABASE_URL")
+        val supabaseKeyResolved = secretForLog("SUPABASE_KEY")
+        val urlEscaped = supabaseUrlResolved.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", " ")
+        debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"config","hypothesisId":"H_supabase_build","location":"app/build.gradle.kts","message":"Supabase BuildConfig resolution","data":{"localPropertiesFileExists":${localPropertiesFile.exists()},"localPropertiesNotNull":${localProperties != null},"supabaseUrlInLocalProps":${localProperties?.getProperty("SUPABASE_URL")?.trim()?.isNotEmpty() == true},"supabaseKeyInLocalProps":${localProperties?.getProperty("SUPABASE_KEY")?.trim()?.isNotEmpty() == true},"resolvedSupabaseUrl":"$urlEscaped","resolvedSupabaseKeyLength":${supabaseKeyResolved.length},"resolvedSupabaseKeyEmpty":${supabaseKeyResolved.isEmpty()}},"timestamp":${System.currentTimeMillis()}}""" + "\n")
+        // #endregion
         val releaseVariant = android.applicationVariants.find { it.name == "release" }
         val signingLabel = (releaseVariant?.signingConfig?.toString() ?: "null").replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", " ")
         debugLog6f24d2.appendText("""{"sessionId":"6f24d2","runId":"config","hypothesisId":"H1","location":"app/build.gradle.kts","message":"release signing","data":{"releaseSigningConfig":"$signingLabel"},"timestamp":${System.currentTimeMillis()}}""" + "\n")

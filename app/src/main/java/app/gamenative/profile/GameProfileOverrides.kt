@@ -23,6 +23,7 @@ data class GameProfileOverrides(
     val vsync: Boolean? = null,
     val dxVersionOverride: String? = null, // AUTO | DX9 | DX10 | DX11 | DX12; AUTO = no override
     val wineRuntime: WineRuntime = WineRuntime.STOCK,
+    val compatibilityLayerVersionId: String? = null, // selected Wine/Proton version id for this game
 ) {
     companion object {
         const val DX_AUTO = "AUTO"

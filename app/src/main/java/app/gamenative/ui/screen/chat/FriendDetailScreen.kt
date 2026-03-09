@@ -35,7 +35,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.PersonAdd
@@ -92,6 +91,7 @@ import app.gamenative.data.PresenceState
 import app.gamenative.data.SteamFriend
 import app.gamenative.data.toPresenceState
 import app.gamenative.service.SteamService
+import app.gamenative.debug.DebugSessionLogger
 import app.gamenative.ui.screen.PluviaScreen
 import app.gamenative.ui.theme.gnAccentGlow
 import app.gamenative.ui.theme.gnAccentPrimary
@@ -138,9 +138,21 @@ fun FriendDetailScreen(
     onNavigateToChat: () -> Unit = {},
     viewModel: FriendDetailViewModel = hiltViewModel(),
 ) {
+    // #region agent log
+    DebugSessionLogger.log("B", "FriendDetailScreen.kt:entry", "detail screen composed", mapOf("steamId" to steamId), android.util.Log.ERROR)
+    // #endregion
+    // #region agent log
+    DebugSessionLogger.log("C", "FriendDetailScreen.kt:beforeMessageFlow", "before messageFlow", mapOf("steamId" to steamId))
+    // #endregion
     val messageFlow = remember(steamId) { viewModel.messages(steamId) }
+    // #region agent log
+    DebugSessionLogger.log("C", "FriendDetailScreen.kt:afterMessageFlow", "after messageFlow", mapOf("steamId" to steamId))
+    // #endregion
     val friends by SteamService.friendsList.collectAsStateWithLifecycle(initialValue = emptyList())
     val friend = friends.firstOrNull { it.steamId == steamId }
+    // #region agent log
+    DebugSessionLogger.log("E", "FriendDetailScreen.kt:friendResolved", "friend lookup", mapOf("steamId" to steamId, "friendNull" to (friend == null), "avatarHashLen" to (friend?.avatarHash?.length ?: -1)))
+    // #endregion
 
     if (steamId == 0L) {
         LaunchedEffect(Unit) { onBack() }
@@ -150,7 +162,13 @@ fun FriendDetailScreen(
     val sortedGames by viewModel.sortedGames.collectAsStateWithLifecycle()
     val isLoadingGames by viewModel.isLoadingGames.collectAsStateWithLifecycle()
     val selectedSort by viewModel.selectedSort.collectAsStateWithLifecycle()
+    // #region agent log
+    DebugSessionLogger.log("C", "FriendDetailScreen.kt:beforeMessagesCollect", "before messages collect", mapOf("steamId" to steamId))
+    // #endregion
     val messages by messageFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    // #region agent log
+    DebugSessionLogger.log("C", "FriendDetailScreen.kt:afterMessagesCollect", "after messages collect", mapOf("steamId" to steamId))
+    // #endregion
     var messageText by remember { mutableStateOf("") }
     var showMoreSheet by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -159,6 +177,9 @@ fun FriendDetailScreen(
     val uriHandler = LocalUriHandler.current
 
     LaunchedEffect(steamId) {
+        // #region agent log
+        DebugSessionLogger.log("D", "FriendDetailScreen.kt:LaunchedEffect(steamId)", "LaunchedEffect steamId", mapOf("steamId" to steamId, "friendNull" to (friend == null)))
+        // #endregion
         if (friend == null) SteamService.requestFriendInfo(steamId)
     }
 
@@ -189,7 +210,7 @@ fun FriendDetailScreen(
                 IconButton(onClick = onBack) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = stringResource(R.string.cancel),
+                        contentDescription = stringResource(R.string.back),
                     )
                 }
                 Text(
@@ -200,48 +221,68 @@ fun FriendDetailScreen(
             }
 
             if (isProfileOnly) {
-                // ——— Player Profile (full replacement) ———
+                // ——— Player Profile (full replacement): single LazyColumn to avoid LazyColumn inside Column(verticalScroll) ———
                 val showShimmer = friend == null || isLoadingGames
                 if (showShimmer) {
                     ProfileShimmer()
                 } else {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(scrollState)
+                    val presenceState = friend.toPresenceState()
+                    val currentGameHeaderUrl = if (friend.gameAppID > 0)
+                        Constants.Library.steamHeaderUrl(friend.gameAppID) else null
+                    // #region agent log
+                    DebugSessionLogger.log("E", "FriendDetailScreen.kt:beforeProfileHero", "before ProfileHeroSection getAvatarURL", mapOf("avatarHashLen" to friend.avatarHash.length))
+                    // #endregion
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        state = listState,
+                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
                     ) {
-                        val presenceState = friend.toPresenceState()
-                        val currentGameHeaderUrl = if (friend.gameAppID > 0)
-                            Constants.Library.steamHeaderUrl(friend.gameAppID) else null
-                        ProfileHeroSection(
-                            displayName = friend.name.ifBlank { stringResource(R.string.friend_unknown) },
-                            avatarUrl = friend.avatarHash.getAvatarURL(),
-                            presenceState = presenceState,
-                            currentGameName = friend.gameName.takeIf { it.isNotBlank() },
-                            currentGameHeaderUrl = currentGameHeaderUrl,
-                            statusMessage = null,
-                        )
-                        ProfileActionRow(
-                            onNavigateToChat = onNavigateToChat,
-                            onSendInvite = { /* TODO: invite when in game */ },
-                            isLocalUserInGame = isLocalUserInGame,
-                            onMoreClick = { showMoreSheet = true },
-                        )
-                        if (presenceState == PresenceState.IN_GAME && currentGameHeaderUrl != null) {
-                            ProfileCurrentlyPlayingCard(
-                                gameName = friend.gameName.ifBlank { stringResource(R.string.in_game) },
-                                gameHeaderUrl = currentGameHeaderUrl,
-                                sessionDuration = stringResource(R.string.in_game),
+                        item {
+                            ProfileHeroSection(
+                                displayName = friend.name.ifBlank { stringResource(R.string.friend_unknown) },
+                                avatarUrl = friend.avatarHash.getAvatarURL(),
+                                presenceState = presenceState,
+                                currentGameName = friend.gameName.takeIf { it.isNotBlank() },
+                                currentGameHeaderUrl = currentGameHeaderUrl,
+                                statusMessage = null,
                             )
                         }
-                        ProfileGamesSection(
-                            games = sortedGames,
-                            selectedSort = selectedSort,
-                            onSortChange = viewModel::setSort,
-                            friendSteamId = steamId,
-                            onNavigateRoute = onNavigateRoute,
-                        )
-                        Spacer(modifier = Modifier.height(24.dp))
+                        item {
+                            ProfileActionRow(
+                                onNavigateToChat = onNavigateToChat,
+                                onSendInvite = { /* TODO: invite when in game */ },
+                                isLocalUserInGame = isLocalUserInGame,
+                                onMoreClick = { showMoreSheet = true },
+                            )
+                        }
+                        if (presenceState == PresenceState.IN_GAME && currentGameHeaderUrl != null) {
+                            item {
+                                ProfileCurrentlyPlayingCard(
+                                    gameName = friend.gameName.ifBlank { stringResource(R.string.in_game) },
+                                    gameHeaderUrl = currentGameHeaderUrl,
+                                    sessionDuration = stringResource(R.string.in_game),
+                                )
+                            }
+                        }
+                        item {
+                            ProfileGamesSectionHeader(
+                                gamesCount = sortedGames.size,
+                                selectedSort = selectedSort,
+                                onSortChange = viewModel::setSort,
+                            )
+                        }
+                        items(sortedGames, key = { it.appId }) { game ->
+                            ProfileGameRowItem(
+                                game = game,
+                                onViewAchievements = {
+                                    onNavigateRoute(PluviaScreen.Achievements.route(game.appId.toString(), steamId))
+                                },
+                            )
+                        }
+                        item {
+                            Spacer(modifier = Modifier.height(24.dp))
+                        }
                     }
                 }
                 if (showMoreSheet && friend != null) {
@@ -266,21 +307,6 @@ fun FriendDetailScreen(
                             ) {
                                 Icon(Icons.Filled.OpenInBrowser, null, tint = gnTextSecondary)
                                 Text("View on Steam", style = PluviaTypography.bodyLarge, color = gnTextPrimary)
-                            }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        val firstAppId = sortedGames.firstOrNull()?.appId
-                                        if (firstAppId != null) onNavigateRoute(PluviaScreen.Achievements.route(firstAppId.toString(), steamId))
-                                        showMoreSheet = false
-                                    }
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Icon(Icons.Filled.EmojiEvents, null, tint = gnTextSecondary)
-                                Text(stringResource(R.string.friend_compare_achievements), style = PluviaTypography.bodyLarge, color = gnTextPrimary)
                             }
                             Divider(color = gnDivider, modifier = Modifier.padding(vertical = 8.dp))
                             Row(
@@ -712,12 +738,10 @@ private fun ProfileCurrentlyPlayingCard(
 }
 
 @Composable
-private fun ProfileGamesSection(
-    games: List<FriendGame>,
+private fun ProfileGamesSectionHeader(
+    gamesCount: Int,
     selectedSort: String,
     onSortChange: (String) -> Unit,
-    friendSteamId: Long,
-    onNavigateRoute: (String) -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -732,7 +756,7 @@ private fun ProfileGamesSection(
             color = gnTextTertiary,
         )
         Text(
-            text = "${games.size} games",
+            text = "$gamesCount games",
             style = PluviaTypography.bodySmall,
             color = gnTextSecondary,
         )
@@ -762,20 +786,6 @@ private fun ProfileGamesSection(
                     selectedBorderColor = gnAccentPrimary.copy(alpha = 0.4f),
                 ),
                 shape = RoundedCornerShape(20.dp),
-            )
-        }
-    }
-    LazyColumn(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
-    ) {
-        items(games, key = { it.appId }) { game ->
-            ProfileGameRowItem(
-                game = game,
-                onViewAchievements = {
-                    onNavigateRoute(PluviaScreen.Achievements.route(game.appId.toString(), friendSteamId))
-                },
             )
         }
     }

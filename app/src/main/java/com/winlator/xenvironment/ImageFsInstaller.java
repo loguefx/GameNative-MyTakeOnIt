@@ -76,6 +76,10 @@ public abstract class ImageFsInstaller {
         ImageFs imageFs = ImageFs.find(context);
         for (String version : versions) {
             File downloaded = new File(imageFs.getFilesDir(), version + ".txz");
+            if (!downloaded.exists()) {
+                Log.w("ImageFsInstaller", "Skipping " + version + ": " + downloaded.getPath() + " not found");
+                continue;
+            }
             File outFile = new File(rootDir, "/opt/" + version);
             outFile.mkdirs();
             TarCompressorUtils.extract(

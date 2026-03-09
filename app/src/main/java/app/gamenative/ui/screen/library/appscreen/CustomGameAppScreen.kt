@@ -190,6 +190,7 @@ class CustomGameAppScreen : BaseAppScreen() {
         onClickPlay: (Boolean) -> Unit
     ) {
         // Launch the game; preLaunchApp will show EXECUTABLE_NOT_FOUND if no exe (getLaunchExecutable blank)
+        Timber.tag("GameLaunch").i("Emitting ExternalGameLaunch appId=${libraryItem.appId}")
         PluviaApp.events.emit(AndroidEvent.ExternalGameLaunch(libraryItem.appId))
     }
 

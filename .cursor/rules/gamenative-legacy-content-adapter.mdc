@@ -1,0 +1,49 @@
+---
+description: LegacyContentAdapter — infer synthetic ContentProfile from upstream Wine/Proton tarballs that have no profile.json, so GloriousEggroll and Kron4ek builds install without repackaging.
+globs: ["**/ContentsManager*", "**/ContentProfile*", "**/LegacyContent*", "**/contents/*"]
+alwaysApply: false
+---
+
+# GameNative — Legacy Content Adapter
+
+## Purpose
+
+Upstream tarballs (Proton-GE from GloriousEggroll, Wine from Kron4ek) are structured for desktop Linux, not for the GameNative container. They do not contain `profile.json`. ContentsManager expects that file to know `binPath`, `libPath`, and `prefixPack`. Without it, extraction succeeds but install fails with **ERROR_NOPROFILE** or **ERROR_MISSINGFILES**.
+
+**LegacyContentAdapter** detects when an extracted tarball has no `profile.json` and infers a synthetic profile from the directory structure, then returns a `ContentProfile` so the rest of the install path (validation, `finishInstallContent`, normalization) runs unchanged.
+
+## Contract
+
+- **Input:** Extracted content root (the tmp dir after `TarCompressorUtils.extract`). No `profile.json` at root.
+- **Output:** A `ContentProfile` with:
+  - `type`: `CONTENT_TYPE_PROTON` or `CONTENT_TYPE_WINE` (infer from layout or caller hint).
+  - `verName`: Sanitized version name (e.g. from top-level dir name).
+  - `verCode`: 1 (or derived).
+  - `desc`: e.g. `"Legacy (upstream)"`.
+  - `fileList`: Empty list (Wine/Proton do not use fileList in `applyContent`).
+  - `wineBinPath`, `wineLibPath`: Relative to content root, so that `new File(root, wineBinPath)` is the bin directory and contains `wine` (or equivalent).
+  - `winePrefixPack`: Path to a prefix pack file. If upstream has none, create an empty placeholder file under tmp and set this to its relative path so validation passes.
+
+All paths in the profile are **relative to the tmp dir** (same as with normal profile.json). After `finishInstallContent`, the whole tmp dir is renamed to the install path, so relative paths still resolve correctly.
+
+## Layout detection
+
+1. **Content root:** If tmp has exactly one directory child, use it as content root; else use tmp.
+2. **Proton-GE:** Look for `contentRoot/files/bin` with a `wine` (or `wine64`) executable. Set `wineBinPath = contentRootRelative + "files/bin"`, `wineLibPath = contentRootRelative + "files/lib"`. GE often has `lib64` too; use `lib` if present, else `lib64`.
+3. **Kron4ek Wine:** Look for `contentRoot/bin` (after stripping one top-level version dir if present). Set `wineBinPath = contentRootRelative + "bin"`, `wineLibPath = contentRootRelative + "lib"` (or `lib64`).
+4. **Prefix pack:** If a file like `prefix.tar.xz`, `prefixPack.txz`, or similar exists under content root, use it. Otherwise create an empty placeholder file (e.g. `prefixPack.placeholder`) under tmp, set `winePrefixPack` to that relative path, so the existing check `new File(file, profile.winePrefixPack).exists()` passes.
+
+## Integration point
+
+In **ContentsManager.extraContentFile**, after extraction:
+
+- If `new File(file, PROFILE_NAME).exists()` → keep current flow (`readProfile`, then validation).
+- Else → call `LegacyContentAdapter.inferProfile(context, file)`. If non-null, treat as `profile` and run the same validation (fileList is empty so the fileList loop no-ops; Wine/Proton bin/lib/prefixPack checks run). If null, call `callback.onFailed(InstallFailedReason.ERROR_NOPROFILE, null)`.
+
+Do not change `finishInstallContent` or normalization; the synthetic profile is a drop-in for the rest of the pipeline.
+
+## Implementation notes
+
+- Prefer a single class **LegacyContentAdapter** (or similar) in the same package as ContentsManager (e.g. `com.winlator.contents`) with a static method like `ContentProfile inferProfile(Context context, File extractedRoot)`.
+- Use `File.listFiles()` and existence checks; avoid loading full directory trees into memory.
+- Keep inference deterministic: same layout always yields the same paths. No heuristics that depend on order or unrelated files.

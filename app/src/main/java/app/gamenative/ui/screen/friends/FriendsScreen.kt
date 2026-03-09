@@ -40,6 +40,7 @@ import app.gamenative.ui.theme.gnTextTertiary
 import app.gamenative.ui.theme.PluviaTypography
 import app.gamenative.ui.util.SteamIconImage
 import app.gamenative.ui.model.FriendsViewModel
+import app.gamenative.debug.DebugSessionLogger
 import app.gamenative.utils.getAvatarURL
 import app.gamenative.utils.PaddingUtils
 
@@ -94,7 +95,12 @@ fun FriendsScreen(
                     ) { friend ->
                         FriendRow(
                             friend = friend,
-                            onClick = { onFriendClick(friend.steamId) },
+                            onClick = {
+                                // #region agent log
+                                DebugSessionLogger.log("A", "FriendsScreen.kt:onClick", "friend clicked", mapOf("steamId" to friend.steamId), android.util.Log.ERROR)
+                                // #endregion
+                                onFriendClick(friend.steamId)
+                            },
                         )
                     }
                 }
@@ -111,7 +117,12 @@ fun FriendsScreen(
                     ) { friend ->
                         FriendRow(
                             friend = friend,
-                            onClick = { onFriendClick(friend.steamId) },
+                            onClick = {
+                                // #region agent log
+                                DebugSessionLogger.log("A", "FriendsScreen.kt:onClick", "friend clicked", mapOf("steamId" to friend.steamId), android.util.Log.ERROR)
+                                // #endregion
+                                onFriendClick(friend.steamId)
+                            },
                         )
                     }
                 }

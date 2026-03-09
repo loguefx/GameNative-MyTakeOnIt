@@ -1,0 +1,42 @@
+{
+  "proton": [
+    {
+      "id": "proton-8.0-arm64ec",
+      "name": "Proton 8.0 (arm64ec)",
+      "url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton8-26/GE-Proton8-26.tar.gz",
+      "variant": "bionic"
+    },
+    {
+      "id": "proton-8.0-x86_64",
+      "name": "Proton 8.0 (x86_64)",
+      "url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton8-26/GE-Proton8-26.tar.gz",
+      "variant": "bionic"
+    },
+    {
+      "id": "proton-7.0-arm64ec",
+      "name": "Proton 7.0 (arm64ec)",
+      "url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton7-55/GE-Proton7-55.tar.gz",
+      "variant": "bionic"
+    },
+    {
+      "id": "proton-7.0-x86_64",
+      "name": "Proton 7.0 (x86_64)",
+      "url": "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton7-55/GE-Proton7-55.tar.gz",
+      "variant": "bionic"
+    }
+  ],
+  "wine": [
+    {
+      "id": "wine-8.0-x86_64",
+      "name": "Wine 8.0 (x86_64)",
+      "url": "https://github.com/Kron4ek/Wine-Builds/releases/download/8.0/wine-8.0-amd64.tar.xz",
+      "variant": "bionic"
+    },
+    {
+      "id": "wine-7.0-x86_64",
+      "name": "Wine 7.0 (x86_64)",
+      "url": "https://github.com/Kron4ek/Wine-Builds/releases/download/7.0/wine-7.0-amd64.tar.xz",
+      "variant": "bionic"
+    }
+  ]
+}

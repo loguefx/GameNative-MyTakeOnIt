@@ -2,6 +2,7 @@ package app.gamenative.data.repository
 
 import app.gamenative.BuildConfig
 import app.gamenative.data.SteamAchievement
+import app.gamenative.debug.DebugSessionLogger
 import app.gamenative.db.dao.CachedAchievementDao
 import app.gamenative.service.SteamService
 import javax.inject.Inject
@@ -31,6 +32,20 @@ class AchievementRepository @Inject constructor(
         }
 
     suspend fun refreshIfNeeded(appId: Int, steamId: Long) = withContext(Dispatchers.IO) {
+        // #region agent log
+        val loggedInSteamId = SteamService.userSteamId?.convertToUInt64()
+        val isOwnProfile = loggedInSteamId != null && steamId == loggedInSteamId
+        val apiKeyBlank = BuildConfig.STEAM_WEB_API_KEY.isBlank()
+        val apiKeyUnset = BuildConfig.STEAM_WEB_API_KEY == "unset"
+        DebugSessionLogger.log("H1", "AchievementRepository.refreshIfNeeded", "entry", mapOf(
+            "appId" to appId,
+            "steamId" to steamId,
+            "loggedInSteamId" to loggedInSteamId,
+            "isOwnProfile" to isOwnProfile,
+            "apiKeyBlank" to apiKeyBlank,
+            "apiKeyUnset" to apiKeyUnset,
+        ))
+        // #endregion
         val now = System.currentTimeMillis()
         val existing = cachedAchievementDao.getOnce(appId, steamId)
         val needRefresh = existing == null || (now - existing.schemaFetchedAt) > CACHE_VALID_MS ||
@@ -38,7 +53,6 @@ class AchievementRepository @Inject constructor(
         if (!needRefresh) return@withContext
 
         // Prefer SteamKit (no API key): when logged in and requesting own stats
-        val loggedInSteamId = SteamService.userSteamId?.convertToUInt64()
         if (loggedInSteamId != null && steamId == loggedInSteamId) {
             val callback = SteamService.requestUserStats(appId)
             val pair = callback?.let { SteamService.userStatsCallbackToCacheJson(it) }
@@ -56,10 +70,16 @@ class AchievementRepository @Inject constructor(
                 Timber.tag("Achievements").d("Refreshed achievements for appId=$appId via SteamKit")
                 return@withContext
             }
+            // #region agent log
+            DebugSessionLogger.log("H2", "AchievementRepository.refreshIfNeeded", "SteamKit path returned null (own profile)", mapOf("appId" to appId))
+            // #endregion
         }
 
         // Fallback: Steam Web API (requires STEAM_WEB_API_KEY)
         if (BuildConfig.STEAM_WEB_API_KEY.isBlank() || BuildConfig.STEAM_WEB_API_KEY == "unset") {
+            // #region agent log
+            DebugSessionLogger.log("H1", "AchievementRepository.refreshIfNeeded", "early return: API key missing or unset", mapOf("apiKeyBlank" to apiKeyBlank, "apiKeyUnset" to apiKeyUnset))
+            // #endregion
             Timber.tag("Achievements").d("SteamKit path failed or not own profile; STEAM_WEB_API_KEY not set")
             return@withContext
         }
@@ -91,6 +111,9 @@ class AchievementRepository @Inject constructor(
                 playerFetchedAt = playerFetchedAt,
             ),
         )
+        // #region agent log
+        DebugSessionLogger.log("H2", "AchievementRepository.refreshIfNeeded", "inserted via Steam Web API", mapOf("appId" to appId, "steamId" to steamId))
+        // #endregion
     }
 
     private fun fetchSchema(key: String, appId: Int): Pair<String, Long>? {

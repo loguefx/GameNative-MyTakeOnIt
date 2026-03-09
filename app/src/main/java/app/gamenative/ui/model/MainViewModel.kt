@@ -57,6 +57,8 @@ class MainViewModel @Inject constructor(
         data object ShowDiscordSupportDialog : MainUiEvent()
         data class ShowGameFeedbackDialog(val appId: String) : MainUiEvent()
         data class ShowToast(val message: String) : MainUiEvent()
+        /** Shown when launch fails after preflight (e.g. container setup, Steam API, or env start). */
+        data class LaunchFailed(val message: String) : MainUiEvent()
     }
 
     private val _state = MutableStateFlow(MainState())
@@ -114,9 +116,8 @@ class MainViewModel @Inject constructor(
     }
 
     private val onExternalGameLaunch: (AndroidEvent.ExternalGameLaunch) -> Unit = {
-        Timber.tag("MainViewModel").i("Received external game launch event for app ${it.appId}")
+        Timber.tag("GameLaunch").i("AndroidEvent.ExternalGameLaunch received appId=${it.appId}, sending to UI")
         viewModelScope.launch {
-            Timber.tag("MainViewModel").i("Sending ExternalGameLaunch UI event for app ${it.appId}")
             _uiEvent.send(MainUiEvent.ExternalGameLaunch(it.appId))
         }
     }
@@ -257,28 +258,40 @@ class MainViewModel @Inject constructor(
             setShowBootingSplash(true)
             PluviaApp.events.emit(AndroidEvent.SetAllowedOrientation(PrefManager.allowedOrientation))
 
-            val apiJob = viewModelScope.async(Dispatchers.IO) {
-                val container = ContainerUtils.getOrCreateContainer(context, appId)
-                val gameSource = ContainerUtils.extractGameSourceFromContainerId(appId)
-                if (gameSource == GameSource.STEAM) {
-                    if (container.isLaunchRealSteam()) {
-                        SteamUtils.restoreSteamApi(context, appId)
-                    } else {
-                        if (container.isUseLegacyDRM) {
-                            SteamUtils.replaceSteamApi(context, appId)
+            try {
+                Timber.tag("GameLaunch").i("launchApp started appId=$appId")
+                val apiJob = viewModelScope.async(Dispatchers.IO) {
+                    val container = ContainerUtils.getOrCreateContainer(context, appId)
+                    Timber.tag("GameLaunch").d("getOrCreateContainer done wineVersion=${container.wineVersion}")
+                    val gameSource = ContainerUtils.extractGameSourceFromContainerId(appId)
+                    if (gameSource == GameSource.STEAM) {
+                        if (container.isLaunchRealSteam()) {
+                            SteamUtils.restoreSteamApi(context, appId)
                         } else {
-                            SteamUtils.replaceSteamclientDll(context, appId)
+                            if (container.isUseLegacyDRM) {
+                                SteamUtils.replaceSteamApi(context, appId)
+                            } else {
+                                SteamUtils.replaceSteamclientDll(context, appId)
+                            }
                         }
                     }
                 }
+
+                // Small delay to ensure the splash screen is visible before proceeding
+                delay(100)
+
+                apiJob.await()
+                Timber.tag("GameLaunch").i("launchApp emitting LaunchApp for appId=$appId")
+                _uiEvent.send(MainUiEvent.LaunchApp)
+            } catch (e: Exception) {
+                setShowBootingSplash(false)
+                Timber.tag("GameLaunch").e(e, "launchApp failed appId=$appId")
+                _uiEvent.send(
+                    MainUiEvent.LaunchFailed(
+                        (e.message ?: e.javaClass.simpleName) + "\n\nFilter logcat by 'GameLaunch' for full stack trace."
+                    )
+                )
             }
-
-            // Small delay to ensure the splash screen is visible before proceeding
-            delay(100)
-
-            apiJob.await()
-
-            _uiEvent.send(MainUiEvent.LaunchApp)
         }
     }
 

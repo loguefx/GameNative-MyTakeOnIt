@@ -67,13 +67,14 @@ object ManifestInstaller {
         isDriver: Boolean,
         contentType: ContentProfile.ContentType? = null,
         onProgress: (Float) -> Unit = {},
+        preferredVerName: String? = null,
     ): ManifestInstallResult {
         return if (isDriver) {
             downloadAndInstallDriver(context, entry, onProgress)
         } else {
             val type = contentType
                 ?: throw IllegalArgumentException("contentType must be provided when installing manifest content")
-            downloadAndInstallContent(context, entry, type, onProgress)
+            downloadAndInstallContent(context, entry, type, onProgress, preferredVerName)
         }
     }
 
@@ -82,6 +83,7 @@ object ManifestInstaller {
         entry: ManifestEntry,
         expectedType: ContentProfile.ContentType,
         onProgress: (Float) -> Unit = {},
+        preferredVerName: String? = null,
     ): ManifestInstallResult = withContext(Dispatchers.IO) {
         var destFile: File? = null
         try {
@@ -90,7 +92,7 @@ object ManifestInstaller {
             val uri = Uri.fromFile(destFile)
             val mgr = ContentsManager(context)
 
-            val (profile, fail, error) = extractContent(mgr, uri)
+            val (profile, fail, error) = extractContent(mgr, uri, preferredVerName)
             if (profile == null) {
                 return@withContext ManifestInstallResult(
                     success = false,
@@ -129,6 +131,7 @@ object ManifestInstaller {
     private suspend fun extractContent(
         mgr: ContentsManager,
         uri: Uri,
+        preferredVerName: String? = null,
     ): Triple<ContentProfile?, ContentsManager.InstallFailedReason?, Exception?> = withContext(Dispatchers.IO) {
         var profile: ContentProfile? = null
         var failReason: ContentsManager.InstallFailedReason? = null
@@ -146,7 +149,7 @@ object ManifestInstaller {
                     profile = profileArg
                     latch.countDown()
                 }
-            })
+            }, preferredVerName)
         } catch (e: Exception) {
             err = e
             latch.countDown()

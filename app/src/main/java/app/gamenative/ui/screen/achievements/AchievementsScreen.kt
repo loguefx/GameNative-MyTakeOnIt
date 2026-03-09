@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -128,6 +130,7 @@ fun AchievementsScreen(
                 AchievementFilter.LOCKED -> achievements.filter { !it.unlocked }
             }
         }
+        var selectedAchievementForDescription by remember { mutableStateOf<SteamAchievement?>(null) }
 
         Column(
             modifier = Modifier
@@ -149,12 +152,13 @@ fun AchievementsScreen(
                     friendMap = friendMap,
                     myMap = myMap,
                     allNames = allNames,
-                    modifier = Modifier.weight(1f),
+                    onAchievementClick = { selectedAchievementForDescription = it },
+                    modifier = Modifier.fillMaxHeight(),
                 )
             } else if (achievements.isEmpty()) {
                 AchievementsEmptyState(
                     onRetry = { viewModel.refresh() },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxHeight(),
                 )
             } else {
                 ProgressCard(
@@ -187,14 +191,35 @@ fun AchievementsScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxHeight()
                         .padding(vertical = 4.dp),
                 ) {
                     items(filteredAchievements, key = { it.apiName }) { achievement ->
-                        AchievementCard(achievement = achievement)
+                        AchievementCard(
+                            achievement = achievement,
+                            onClick = { selectedAchievementForDescription = achievement },
+                        )
                     }
                 }
             }
+        }
+        selectedAchievementForDescription?.let { achievement ->
+            AlertDialog(
+                onDismissRequest = { selectedAchievementForDescription = null },
+                title = { Text(achievement.name.ifBlank { achievement.apiName }, style = PluviaTypography.titleMedium, color = gnTextPrimary) },
+                text = {
+                    Text(
+                        text = achievement.description.ifBlank { stringResource(R.string.achievements_no_description) },
+                        style = PluviaTypography.bodyMedium,
+                        color = gnTextSecondary,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { selectedAchievementForDescription = null }) {
+                        Text(stringResource(android.R.string.ok), color = gnAccentPrimary)
+                    }
+                },
+            )
         }
     }
 }
@@ -326,6 +351,7 @@ private fun CompareWithMeContent(
     friendMap: Map<String, SteamAchievement>,
     myMap: Map<String, SteamAchievement>,
     allNames: List<String>,
+    onAchievementClick: (SteamAchievement) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val friendCount = friendMap.values.count { it.unlocked }
@@ -349,7 +375,7 @@ private fun CompareWithMeContent(
                 .padding(vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.fillMaxWidth(0.5f)) {
                 Text(
                     text = stringResource(R.string.achievements_compare_you),
                     style = PluviaTypography.labelSmall,
@@ -366,7 +392,7 @@ private fun CompareWithMeContent(
                     trackColor = gnTextTertiary.copy(alpha = 0.3f),
                 )
             }
-            Column(modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.fillMaxWidth(0.5f)) {
                 Text(
                     text = stringResource(R.string.achievements_compare_friend),
                     style = PluviaTypography.labelSmall,
@@ -394,6 +420,7 @@ private fun CompareWithMeContent(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             items(allNames) { apiName ->
+                val achievement = friendMap[apiName] ?: myMap[apiName]
                 val friendUnlocked = friendMap[apiName]?.unlocked == true
                 val myUnlocked = myMap[apiName]?.unlocked == true
                 val displayName = friendMap[apiName]?.name ?: myMap[apiName]?.name ?: apiName
@@ -403,6 +430,8 @@ private fun CompareWithMeContent(
                     friendUnlocked = friendUnlocked,
                     myUnlocked = myUnlocked,
                     iLead = iLead,
+                    achievement = achievement,
+                    onAchievementClick = { achievement?.let(onAchievementClick) },
                 )
             }
         }
@@ -487,6 +516,8 @@ private fun CompareRow(
     friendUnlocked: Boolean,
     myUnlocked: Boolean,
     iLead: Boolean,
+    achievement: SteamAchievement? = null,
+    onAchievementClick: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier
@@ -497,6 +528,7 @@ private fun CompareRow(
                 else gnBgSurface
             )
             .border(1.dp, gnBorderCard, RoundedCornerShape(8.dp))
+            .clickable(onClick = onAchievementClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
@@ -505,7 +537,7 @@ private fun CompareRow(
             text = displayName,
             style = PluviaTypography.bodySmall,
             color = gnTextPrimary,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.fillMaxWidth(),
             maxLines = 2,
         )
         Row(
@@ -536,6 +568,7 @@ private fun CompareStatusIcon(unlocked: Boolean, isMine: Boolean) {
 @Composable
 private fun AchievementCard(
     achievement: SteamAchievement,
+    onClick: () -> Unit = {},
 ) {
     val iconUrl = if (achievement.unlocked) achievement.iconUrl else achievement.iconGrayUrl
     val url = if (iconUrl.startsWith("http")) iconUrl else {
@@ -547,7 +580,8 @@ private fun AchievementCard(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(gnBgSurface)
-            .border(1.dp, gnBorderCard, RoundedCornerShape(12.dp)),
+            .border(1.dp, gnBorderCard, RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
     ) {
         if (achievement.unlocked) {
             Box(

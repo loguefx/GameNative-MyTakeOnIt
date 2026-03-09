@@ -159,6 +159,15 @@ public class ContentsManager {
     }
 
     public void extraContentFile(Uri uri, OnInstallFinishedCallback callback) {
+        extraContentFile(uri, callback, null);
+    }
+
+    /**
+     * Same as extraContentFile(uri, callback). When installing from the version picker,
+     * pass the manifest entry id as preferredVerName so the installed profile is findable
+     * by getProfileByEntryName(entryId) at launch (e.g. "proton-8.0-arm64ec").
+     */
+    public void extraContentFile(Uri uri, OnInstallFinishedCallback callback, String preferredVerName) {
         cleanTmpDir(context);
 
         File file = getTmpDir(context);
@@ -167,23 +176,32 @@ public class ContentsManager {
         ret = TarCompressorUtils.extract(TarCompressorUtils.Type.XZ, context, uri, file);
         if (!ret)
             ret = TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, context, uri, file);
+        if (!ret)
+            ret = TarCompressorUtils.extract(TarCompressorUtils.Type.GZ, context, uri, file);
         if (!ret) {
             callback.onFailed(InstallFailedReason.ERROR_BADTAR, null);
             return;
         }
 
         File proFile = new File(file, PROFILE_NAME);
-        if (!proFile.exists()) {
-            Log.e("ContentsManager", "profile.json not found");
-            callback.onFailed(InstallFailedReason.ERROR_NOPROFILE, null);
-            return;
-        }
-
-        ContentProfile profile = readProfile(proFile);
-        if (profile == null) {
-            Log.e("ContentsManager", "Failed to parse profile.json");
-            callback.onFailed(InstallFailedReason.ERROR_BADPROFILE, null);
-            return;
+        ContentProfile profile;
+        if (proFile.exists()) {
+            profile = readProfile(proFile);
+            if (profile == null) {
+                Log.e("ContentsManager", "Failed to parse profile.json");
+                callback.onFailed(InstallFailedReason.ERROR_BADPROFILE, null);
+                return;
+            }
+        } else {
+            profile = LegacyContentAdapter.inferProfile(context, file);
+            if (profile == null) {
+                Log.e("ContentsManager", "profile.json not found and legacy layout not recognized");
+                callback.onFailed(InstallFailedReason.ERROR_NOPROFILE, null);
+                return;
+            }
+            if (preferredVerName != null && !preferredVerName.isEmpty()) {
+                profile.verName = preferredVerName;
+            }
         }
 
         String imagefsPath = context.getFilesDir().getAbsolutePath() + "/imagefs";

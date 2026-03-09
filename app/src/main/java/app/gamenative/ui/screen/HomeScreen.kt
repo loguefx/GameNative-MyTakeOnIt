@@ -18,6 +18,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +42,7 @@ import app.gamenative.ui.theme.gnBgSurface
 @Composable
 fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
+    initialTab: HomeDestination? = null,
     onChat: (Long) -> Unit,
     onClickExit: () -> Unit,
     onClickPlay: (String, Boolean) -> Unit,
@@ -53,6 +55,9 @@ fun HomeScreen(
     val homeState by viewModel.homeState.collectAsStateWithLifecycle()
     val currentDestination = homeState.currentDestination
     val downloadingCount by viewModel.downloadingCount.collectAsStateWithLifecycle()
+    LaunchedEffect(initialTab) {
+        initialTab?.let { viewModel.onDestination(it) }
+    }
     val downloadingAppIds by viewModel.downloadingAppIds.collectAsStateWithLifecycle()
 
     BackHandler {

@@ -954,12 +954,17 @@ object ContainerUtils {
     }
 
     /**
-     * Applies per-game profile overrides to container data (resolutionScale, dxVersionOverride).
+     * Applies per-game profile overrides to container data (resolutionScale, dxVersionOverride, compatibilityLayerVersionId).
      * Used in createNewContainer and when saving from Game Settings so existing containers get updated.
+     * When compatibilityLayerVersionId is set (version picker selection), container wineVersion is synced
+     * so launch uses ContentsManager.getInstallDir for that version — same path WineInfo.fromIdentifier uses.
      */
     fun applyPerGameContainerOverrides(context: Context, appId: String, containerData: ContainerData): ContainerData {
         val overrides = GameProfileStore.load(context, appId) ?: return containerData
         var result = containerData
+        if (overrides.compatibilityLayerVersionId != null) {
+            result = result.copy(wineVersion = overrides.compatibilityLayerVersionId)
+        }
         if (overrides.resolutionScale != null && overrides.resolutionScale > 0f) {
             val scale = overrides.resolutionScale
             val parts = containerData.screenSize.split("x", ignoreCase = true)
@@ -993,6 +998,12 @@ object ContainerUtils {
         } else {
             createNewContainer(context, appId, appId, containerManager)
         }
+
+        // Sync per-game overrides (e.g. compatibilityLayerVersionId from version picker) into container
+        // so container.wineVersion matches what launch uses (WineInfo.fromIdentifier → getInstallDir).
+        var containerData = toContainerData(container)
+        containerData = applyPerGameContainerOverrides(context, appId, containerData)
+        applyToContainer(context, container, containerData)
 
         // Ensure Custom Games have the A: drive mapped to the game folder
         // and GOG games have a drive mapped to the GOG games directory
