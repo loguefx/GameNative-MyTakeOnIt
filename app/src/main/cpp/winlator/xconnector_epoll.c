@@ -27,7 +27,11 @@ typedef struct {
 
 static FdTracker fd_tracking[MAX_TRACKED_FDS] = {0};
 
-struct epoll_event events[MAX_EVENTS];
+/*
+ * NOTE: events[] is declared inside doEpollIndefinitely (stack-allocated per-call)
+ * so concurrent XConnectorEpoll threads (X server, ALSA, SHM…) each have their own
+ * copy.  A file-scope global here would be a data race across those threads.
+ */
 
 // Call this when you first obtain/create a file descriptor
 void trackFd(jint fd) {
@@ -106,6 +110,51 @@ Java_com_winlator_xconnector_XConnectorEpoll_createAFUnixSocket(JNIEnv *env, job
     return -1;
 }
 
+/*
+ * Bind a Linux abstract-namespace Unix socket.
+ * Wine's Xlib/XCB always tries the abstract socket \0/tmp/.X11-unix/X0 FIRST,
+ * before falling back to the filesystem path.  Binding this abstract socket
+ * lets winex11.drv connect without needing a real /tmp on the Android host.
+ *
+ * "name" is the socket name WITHOUT the leading null byte, e.g. "/tmp/.X11-unix/X0".
+ * The kernel distinguishes abstract sockets by sun_path[0] == '\0'.
+ */
+JNIEXPORT jint JNICALL
+Java_com_winlator_xconnector_XConnectorEpoll_createAbstractAFUnixSocket(JNIEnv *env, jobject obj,
+                                                                         jstring name) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    printf("xconnector_epoll.c abstract socket %d", fd);
+    if (fd < 0) return -1;
+    trackFd(fd);
+
+    const char *namePtr = (*env)->GetStringUTFChars(env, name, 0);
+    size_t nameLen = strlen(namePtr);
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    /* sun_path[0] = '\0' signals abstract namespace; name follows immediately */
+    addr.sun_path[0] = '\0';
+    strncpy(addr.sun_path + 1, namePtr, sizeof(addr.sun_path) - 2);
+    /* address length: sa_family + '\0' byte + name (no null terminator counted) */
+    socklen_t addrLen = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + nameLen);
+
+    (*env)->ReleaseStringUTFChars(env, name, namePtr);
+
+    if (bind(fd, (struct sockaddr*)&addr, addrLen) < 0) {
+        printf("xconnector_epoll.c abstract bind failed: %s", strerror(errno));
+        closeFd(fd);
+        return -1;
+    }
+    if (listen(fd, MAX_EVENTS) < 0) {
+        printf("xconnector_epoll.c abstract listen failed: %s", strerror(errno));
+        closeFd(fd);
+        return -1;
+    }
+    printf("xconnector_epoll.c abstract socket bound to \\0%s", addr.sun_path + 1);
+    return fd;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_winlator_xconnector_XConnectorEpoll_createEpollFd(JNIEnv *env, jobject obj) {
     int fd = epoll_create(MAX_EVENTS);
@@ -119,35 +168,55 @@ Java_com_winlator_xconnector_XConnectorEpoll_closeFd(JNIEnv *env, jobject obj, j
     closeFd(fd);
 }
 
+/*
+ * doEpollIndefinitely: wait for one epoll batch, dispatch new-connection or data events.
+ * acceptFromFd: helper that accepts one client from a server fd and notifies Java.
+ */
+static void acceptFromFd(JNIEnv *env, jobject obj, jclass cls,
+                         jint epollFd, jint listenFd,
+                         jboolean addClientToEpoll) {
+    jmethodID handleNewConnection = (*env)->GetMethodID(env, cls, "handleNewConnection", "(I)V");
+    int clientFd = accept(listenFd, NULL, NULL);
+    printf("xconnector_epoll.c accept %d from listenFd %d", clientFd, listenFd);
+    if (clientFd < 0) return;
+    trackFd(clientFd);
+    if (addClientToEpoll) {
+        struct epoll_event ev = {.data.fd = clientFd, .events = EPOLLIN};
+        if (epoll_ctl(epollFd, EPOLL_CTL_ADD, clientFd, &ev) >= 0) {
+            (*env)->CallVoidMethod(env, obj, handleNewConnection, clientFd);
+        }
+    } else {
+        (*env)->CallVoidMethod(env, obj, handleNewConnection, clientFd);
+    }
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_winlator_xconnector_XConnectorEpoll_doEpollIndefinitely(JNIEnv *env, jobject obj,
                                                                  jint epollFd,
                                                                  jint serverFd,
-                                                                 jboolean addClientToEpoll) {
+                                                                 jboolean addClientToEpoll,
+                                                                 jint abstractServerFd) {
+    /*
+     * abstractServerFd is passed directly from Java (not looked up via GetFieldID)
+     * so this function is safe under ProGuard / R8 obfuscation.  A value of -1
+     * means no abstract socket is in use.
+     */
     jclass cls = (*env)->GetObjectClass(env, obj);
-    jmethodID handleNewConnection =
-            (*env)->GetMethodID(env, cls, "handleNewConnection", "(I)V");
     jmethodID handleExistingConnection =
             (*env)->GetMethodID(env, cls, "handleExistingConnection", "(I)V");
 
+    /* Stack-local so each XConnectorEpoll thread has its own buffer (no data race). */
+    struct epoll_event events[MAX_EVENTS];
     int numFds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
     for (int i = 0; i < numFds; i++) {
-        if (events[i].data.fd == serverFd) {
-            int clientFd = accept(serverFd, NULL, NULL);
-            printf("xconnector_epoll.c accept %d", clientFd);
-            if (clientFd >= 0) {
-                trackFd(clientFd);
-                if (addClientToEpoll) {
-                    struct epoll_event ev = {.data.fd = clientFd, .events = EPOLLIN};
-                    if (epoll_ctl(epollFd, EPOLL_CTL_ADD, clientFd, &ev) >= 0) {
-                        (*env)->CallVoidMethod(env, obj, handleNewConnection, clientFd);
-                    }
-                } else {
-                    (*env)->CallVoidMethod(env, obj, handleNewConnection, clientFd);
-                }
-            }
+        int evFd = events[i].data.fd;
+        if (evFd == serverFd) {
+            acceptFromFd(env, obj, cls, epollFd, serverFd, addClientToEpoll);
+        } else if (abstractServerFd >= 0 && evFd == abstractServerFd) {
+            /* New connection on the abstract-namespace socket (winex11.drv path). */
+            acceptFromFd(env, obj, cls, epollFd, abstractServerFd, addClientToEpoll);
         } else if (events[i].events & EPOLLIN) {
-            (*env)->CallVoidMethod(env, obj, handleExistingConnection, events[i].data.fd);
+            (*env)->CallVoidMethod(env, obj, handleExistingConnection, evFd);
         }
     }
     return numFds >= 0;

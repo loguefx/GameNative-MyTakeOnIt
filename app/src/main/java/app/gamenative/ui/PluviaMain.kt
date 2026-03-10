@@ -227,6 +227,9 @@ fun PluviaMain(
                 }
 
                 MainViewModel.MainUiEvent.OnLoggedOut -> {
+                    // Discard any stale invite notifications so they don't reappear
+                    // when the next user logs in on the same device.
+                    inviteViewModel.clearAll()
                     // Pop stack and go back to login.
                     navController.popBackStack(
                         route = PluviaScreen.LoginUser.route,
@@ -497,15 +500,22 @@ fun PluviaMain(
         )
     }
 
+    // Forward game invites from the Steam event bus into InviteViewModel.
+    val onGameInviteReceived: (app.gamenative.events.SteamEvent.GameInviteReceived) -> Unit = { event ->
+        inviteViewModel.onInviteReceived(event.invite)
+    }
+
     LaunchedEffect(Unit) {
         PluviaApp.events.on<AndroidEvent.PromptSaveContainerConfig, Unit>(onPromptSaveConfig)
         PluviaApp.events.on<AndroidEvent.ShowGameFeedback, Unit>(onShowGameFeedback)
+        PluviaApp.events.on<app.gamenative.events.SteamEvent.GameInviteReceived, Unit>(onGameInviteReceived)
     }
 
     DisposableEffect(Unit) {
         onDispose {
             PluviaApp.events.off<AndroidEvent.PromptSaveContainerConfig, Unit>(onPromptSaveConfig)
             PluviaApp.events.off<AndroidEvent.ShowGameFeedback, Unit>(onShowGameFeedback)
+            PluviaApp.events.off<app.gamenative.events.SteamEvent.GameInviteReceived, Unit>(onGameInviteReceived)
         }
     }
 
@@ -955,10 +965,15 @@ fun PluviaMain(
                     viewModel.viewModelScope.launch {
                         Timber.d("GameFeedback: Inside coroutine scope")
                         try {
+                            val client = PluviaApp.supabase
+                            if (client == null) {
+                                viewModel.showToast("Feedback service unavailable")
+                                return@launch
+                            }
                             Timber.d("GameFeedback: Calling submitGameFeedback with rating=${feedbackState.rating}")
                             val result = GameFeedbackUtils.submitGameFeedback(
                                 context = context,
-                                supabase = PluviaApp.supabase,
+                                supabase = client,
                                 appId = appId,
                                 rating = feedbackState.rating,
                                 tags = feedbackState.selectedTags.toList(),
@@ -1099,8 +1114,38 @@ fun PluviaMain(
                     "downloads" -> app.gamenative.ui.enums.HomeDestination.Downloads
                     else -> app.gamenative.ui.enums.HomeDestination.Friends
                 }
+                val homePendingInvites by inviteViewModel.pendingInvites.collectAsStateWithLifecycle()
                 HomeScreen(
                     initialTab = initialTab,
+                    pendingInvites = homePendingInvites,
+                    onAcceptInvite = { invite ->
+                        inviteViewModel.acceptInvite(
+                            invite = invite,
+                            isGameRunning = false,
+                            launchedAppId = null,
+                            onNavigate = { navController.navigate(it) },
+                        )
+                        // If game is installed, launch it directly
+                        val appIdStr = "STEAM_${invite.gameAppId}"
+                        if (SteamService.isAppInstalled(invite.gameAppId)) {
+                            viewModel.setLaunchedAppId(appIdStr)
+                            viewModel.setBootToContainer(false)
+                            viewModel.setOffline(isOffline)
+                            preLaunchApp(
+                                context = context,
+                                appId = appIdStr,
+                                setLoadingDialogVisible = viewModel::setLoadingDialogVisible,
+                                setLoadingProgress = viewModel::setLoadingDialogProgress,
+                                setLoadingMessage = viewModel::setLoadingDialogMessage,
+                                setMessageDialogState = { msgDialogState = it },
+                                onSuccess = viewModel::launchApp,
+                                isOffline = isOffline,
+                            )
+                        }
+                    },
+                    onDeclineInvite = { invite ->
+                        inviteViewModel.dismissInvite(invite.id)
+                    },
                     onClickPlay = { appId, asContainer ->
                         Timber.tag("GameLaunch").i("Play tapped (Library), appId=$appId asContainer=$asContainer")
                         viewModel.setLaunchedAppId(appId)
@@ -1258,18 +1303,20 @@ fun PluviaMain(
                         gameBackAction = cb
                     },
                     navigateBack = {
-                        CoroutineScope(Dispatchers.Main).launch {
-                            val currentRoute = navController.currentBackStackEntry
-                                ?.destination
-                                ?.route
+                        CoroutineScope(Dispatchers.Default).launch {
+                            withContext(Dispatchers.Main) {
+                                val currentRoute = navController.currentBackStackEntry
+                                    ?.destination
+                                    ?.route
 
-                            if (currentRoute == PluviaScreen.XServer.route) {
-                                if (MainActivity.wasLaunchedViaExternalIntent) {
-                                    Timber.d("[IntentLaunch]: Finishing activity to return to external launcher")
-                                    MainActivity.wasLaunchedViaExternalIntent = false
-                                    (context as? android.app.Activity)?.finish()
-                                } else {
-                                    navController.popBackStack()
+                                if (currentRoute == PluviaScreen.XServer.route) {
+                                    if (MainActivity.wasLaunchedViaExternalIntent) {
+                                        Timber.d("[IntentLaunch]: Finishing activity to return to external launcher")
+                                        MainActivity.wasLaunchedViaExternalIntent = false
+                                        (context as? android.app.Activity)?.finish()
+                                    } else {
+                                        navController.popBackStack()
+                                    }
                                 }
                             }
                         }
@@ -1282,6 +1329,12 @@ fun PluviaMain(
                     },
                     onGameLaunchError = { error ->
                         viewModel.onGameLaunchError(error)
+                        // Leave game screen so user is not stuck on black/debug view (must run on main thread)
+                        CoroutineScope(Dispatchers.Default).launch {
+                            withContext(Dispatchers.Main) {
+                                navController.popBackStack()
+                            }
+                        }
                     },
                 )
             }

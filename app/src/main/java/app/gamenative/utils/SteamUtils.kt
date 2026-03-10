@@ -266,6 +266,10 @@ object SteamUtils {
 
         val imageFs = ImageFs.find(context)
         val downloaded = File(imageFs.getFilesDir(), "experimental-drm-20260116.tzst")
+        if (!downloaded.exists()) {
+            Timber.w("replaceSteamclientDll: experimental-drm-20260116.tzst not found at ${downloaded.absolutePath}; skipping cold client extraction. Download it from Settings or retry launch.")
+            return
+        }
         TarCompressorUtils.extract(
             TarCompressorUtils.Type.ZSTD,
             downloaded,
@@ -340,11 +344,26 @@ object SteamUtils {
         Timber.i("Finished restoreSteamclientFiles for appId: $steamAppId. Restored $restoredCount file(s)")
     }
 
-    internal fun writeColdClientIni(steamAppId: Int, container: Container) {
-        val gameName = getAppDirName(getAppInfoOf(steamAppId))
+    /**
+     * @param extraArgs  Game-specific launch args from KnownGameFixes (e.g. "-nosplash -nointro").
+     *                   Used as ExeCommandLine only when the container has no user-set execArgs.
+     */
+    internal fun writeColdClientIni(steamAppId: Int, container: Container, extraArgs: String = "") {
         val executablePath = container.executablePath.replace("/", "\\")
-        val exePath = "steamapps\\common\\$gameName\\$executablePath"
-        val exeCommandLine = container.execArgs
+
+        // ColdClientLoader resolves relative Exe= paths from its own directory
+        // (C:\Program Files (x86)\Steam\), which only holds the loader — NOT the actual game files.
+        // The game lives on a separate drive (A: by convention for Steam games).  Use an absolute
+        // Windows path so ColdClientLoader finds the exe without showing the "browse" dialog.
+        val appDirPath = SteamService.getAppDirPath(steamAppId)
+        val drives = container.drives
+        val driveIndex = drives.indexOf(appDirPath)
+        // drives format: "A:/path:D:/other" — the drive letter is 2 chars before the path start.
+        val driveLetter = if (driveIndex > 1) drives[driveIndex - 2] else 'A'
+        val exePath = "$driveLetter:\\$executablePath"
+
+        // Prefer user-set container.execArgs; fall back to known-fix args from KnownGameFixes.
+        val exeCommandLine = container.execArgs?.takeIf { it.isNotEmpty() } ?: extraArgs
         val iniFile = File(container.getRootDir(), ".wine/drive_c/Program Files (x86)/Steam/ColdClientLoader.ini")
         iniFile.parentFile?.mkdirs()
 
@@ -362,12 +381,17 @@ object SteamUtils {
             """
         }
 
+        // ExeRunDir: directory ColdClientLoader sets as working dir before launching the exe.
+        // Use the absolute path of the exe's parent directory so games that load assets relative
+        // to their working dir (e.g. BioShock 2 looking for Build\Final\...) resolve correctly.
+        val exeRunDir = "$driveLetter:\\${executablePath.substringBeforeLast("\\", "")}"
+
         iniFile.writeText(
             """
                 [SteamClient]
 
                 Exe=$exePath
-                ExeRunDir=
+                ExeRunDir=$exeRunDir
                 ExeCommandLine=$exeCommandLine
                 AppId=$steamAppId
 

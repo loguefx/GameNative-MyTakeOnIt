@@ -42,11 +42,13 @@ import com.winlator.xenvironment.ImageFs;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.RandomAccessFile;
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import app.gamenative.PluviaApp;
@@ -243,6 +245,7 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         envVars.put("HOME", imageFs.home_path);
         envVars.put("USER", ImageFs.USER);
         envVars.put("TMPDIR", rootDir.getPath() + "/usr/tmp");
+        envVars.put("ROOT", rootDir.getPath());
         envVars.put("DISPLAY", ":0");
 
         String winePath = imageFs.getWinePath() + "/bin";
@@ -315,7 +318,24 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         if (this.envVars != null) {
             envVars.putAll(this.envVars);
         }
+        // Ensure Settings > Debug WINEDEBUG always wins (overrides container or any other source)
+        app.gamenative.PrefManager.INSTANCE.init(context);
+        boolean enableWineDebug = app.gamenative.PrefManager.INSTANCE.getEnableWineDebug();
+        String wineDebugChannels = app.gamenative.PrefManager.INSTANCE.getWineDebugChannels().trim();
+        String winedebugValue;
+        if (!enableWineDebug) {
+            winedebugValue = "-all";
+        } else if (wineDebugChannels.isEmpty()) {
+            winedebugValue = "+all";
+        } else {
+            winedebugValue = "+" + wineDebugChannels.replace(",", ",+").replace(" ", "");
+        }
+        Log.d("BionicProgramLauncherComponent", "PrefManager enableWineDebug (read in Java): " + enableWineDebug);
+        Log.d("BionicProgramLauncherComponent", "PrefManager wineDebugChannels (read in Java): " + wineDebugChannels);
+        envVars.put("WINEDEBUG", winedebugValue);
         Log.d("BionicProgramLauncherComponent", "env vars are " + envVars.toString());
+        // Diagnostic: exact WINEDEBUG passed to exec (short log so logcat won't truncate)
+        Log.d("BionicProgramLauncherComponent", "WINEDEBUG passed to exec: [" + envVars.get("WINEDEBUG") + "]");
 
         String emulator = container.getEmulator();
 
@@ -332,8 +352,45 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             command = getFinalCommand(winePath, emulator, envVars, imageFs.getBinDir(), guestExecutable);
         }
 
-        // 5D: ulimit in same process as Wine — wrap in shell that sets ulimit then exec's the command
-        command = "sh -c \"ulimit -n 1048576 && exec " + command.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        // 5D: ulimit in same process as Wine. Run via a script that receives the command as argv
+        // (exec "$@") so the shell never parses one long line (avoids "inaccessible or not found").
+        // Redirect Wine stdout/stderr to a file so we capture output even when Java streams close immediately.
+        File scriptDir = new File(rootDir, "usr/tmp");
+        if (!scriptDir.exists()) scriptDir.mkdirs();
+        File wineLogFile = new File(scriptDir, "wine_output.log");
+        String wineLogPath = wineLogFile.getAbsolutePath();
+        envVars.put("WINE_LOG_FILE", wineLogPath);
+        File scriptFile = new File(scriptDir, "gn_wine_launch.sh");
+        // Write one line before exec so we can tell script ran vs wine produced no output
+        String scriptContent = "#!/bin/sh\nulimit -n 1048576 2>/dev/null || true\n"
+            + "[ -n \"$WINE_LOG_FILE\" ] && { echo \"Launcher: about to exec $# args (first: $1 $2)\"; exec \"$@\" ; } > \"$WINE_LOG_FILE\" 2>&1 || exec \"$@\"\n";
+        try {
+            try (FileWriter w = new FileWriter(scriptFile)) {
+                w.write(scriptContent);
+            }
+            FileUtils.chmod(scriptFile, 0755);
+        } catch (IOException e) {
+            Log.e("GameLaunch", "Failed to write launch script: " + e.getMessage());
+            throw new RuntimeException("Launch script failed", e);
+        }
+        Log.d("GameLaunch", "Wine stdout/stderr will be written to: " + wineLogPath);
+        Log.d("GameLaunch", "Launch script content: " + scriptContent.replace("\n", " | "));
+        final File wineLogFileForCallback = wineLogFile;
+        String[] wineArgs = ProcessHelper.splitCommand(command);
+        Log.d("GameLaunch", "Launch script: " + scriptFile.getAbsolutePath() + " wineArgsCount: " + wineArgs.length);
+        // Build explicit argv so the script receives all arguments (splitCommand can drop args when re-parsing the string).
+        List<String> argvList = new ArrayList<>();
+        argvList.add("sh");
+        argvList.add(scriptFile.getAbsolutePath());
+        for (String a : wineArgs) {
+            String arg = a;
+            if (arg.length() >= 2 &&
+                ((arg.startsWith("'") && arg.endsWith("'")) || (arg.startsWith("\"") && arg.endsWith("\"")))) {
+                arg = arg.substring(1, arg.length() - 1);
+            }
+            argvList.add(arg);
+        }
+        String[] cmdarray = argvList.toArray(new String[0]);
 
         // **Maybe remove this: Set execute permissions for box64 if necessary (Glibc/Proot artifact)
         File box64File = new File(rootDir, "/usr/bin/box64");
@@ -341,7 +398,30 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             FileUtils.chmod(box64File, 0755);
         }
 
-        return ProcessHelper.exec(command, envVars.toStringArray(), workingDir != null ? workingDir : rootDir, (status) -> {
+        Log.d("GameLaunch", "About to exec: WINEDEBUG in env=[" + envVars.get("WINEDEBUG") + "]");
+        int guestPid = ProcessHelper.exec(cmdarray, envVars.toStringArray(), workingDir != null ? workingDir : rootDir, (status) -> {
+            Log.w("GameLaunch", "=== Guest exit callback: status=" + status + " (0=ok, non-zero=crash). Wine log dump below. ===");
+            if (status == -1) {
+                Log.e("GameLaunch", "Guest process failed to start (exec threw or process could not be spawned)");
+            }
+            // Dump Wine log file to logcat so we have debug output even when process streams closed early
+            if (wineLogFileForCallback != null && wineLogFileForCallback.exists()) {
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(new java.io.FileInputStream(wineLogFileForCallback), java.nio.charset.StandardCharsets.UTF_8))) {
+                    String line;
+                    int count = 0;
+                    while ((line = r.readLine()) != null && count < 500) {
+                        Log.d("GameLaunch", "wine: " + line);
+                        count++;
+                    }
+                    if (count >= 500) Log.d("GameLaunch", "wine: (truncated after 500 lines)");
+                    if (count == 0) Log.w("GameLaunch", "Wine log file is empty (Wine/Proton may have exited before writing; check loader/crash before main)");
+                    Log.d("GameLaunch", "Wine log file path: " + wineLogFileForCallback.getAbsolutePath() + " (" + count + " lines)");
+                } catch (IOException e) {
+                    Log.e("GameLaunch", "Could not read Wine log file: " + e.getMessage());
+                }
+            } else {
+                Log.d("GameLaunch", "Wine log file not found (path: " + (wineLogFileForCallback != null ? wineLogFileForCallback.getAbsolutePath() : "null") + ")");
+            }
             synchronized (lock) {
                 pid = -1;
             }
@@ -350,7 +430,9 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
                 if (terminationCallback != null)
                     terminationCallback.call(status);
             }
-        });
+        }, "GameLaunch");
+        Log.d("GameLaunch", "Guest process started pid=" + guestPid + " (shell that will exec to Wine)");
+        return guestPid;
     }
 
     @NonNull
@@ -468,6 +550,7 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         envVars.put("HOME", imageFs.home_path);
         envVars.put("USER", ImageFs.USER);
         envVars.put("TMPDIR", imageFs.getRootDir().getPath() + "/tmp");
+        envVars.put("ROOT", rootDir.getPath());
         envVars.put("DISPLAY", ":0");
 
         String winePath = imageFs.getWinePath() + "/bin";

@@ -53,7 +53,7 @@ fun SupportersDialog(
     LaunchedEffect(Unit) {
         isLoading = true
         val data = withContext(Dispatchers.IO) {
-            fetchKofiSupporters(PluviaApp.supabase)
+            PluviaApp.supabase?.let { fetchKofiSupporters(it) } ?: emptyList()
         }
         supporters = data
         isLoading = false

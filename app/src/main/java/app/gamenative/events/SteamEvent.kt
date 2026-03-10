@@ -1,5 +1,6 @@
 package app.gamenative.events
 
+import app.gamenative.data.GameInvite
 import app.gamenative.data.SteamFriend
 import app.gamenative.enums.LoginResult
 import `in`.dragonbra.javasteam.steam.handlers.steamfriends.callback.ProfileInfoCallback
@@ -13,6 +14,20 @@ sealed interface SteamEvent<T> : Event<T> {
     data class PersonaStateReceived(val persona: SteamFriend) : SteamEvent<Unit>
     data class QrAuthEnded(val success: Boolean, val message: String? = null) : SteamEvent<Unit>
     data class QrChallengeReceived(val challengeUrl: String) : SteamEvent<Unit>
+
+    /** Emitted when a Steam friend sends a game invite or starts playing with a connect string. */
+    data class GameInviteReceived(val invite: GameInvite) : SteamEvent<Unit>
+
+    /**
+     * Emitted when the running game unlocks a Steam achievement.
+     * [iconUrl] is the CDN URL of the achievement icon.
+     */
+    data class AchievementUnlocked(
+        val appId: Int,
+        val achievementId: String,
+        val displayName: String,
+        val iconUrl: String,
+    ) : SteamEvent<Unit>
 
     // data object AppInfoReceived : SteamEvent<Unit>
     data object ForceCloseApp : SteamEvent<Unit>

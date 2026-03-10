@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -80,11 +81,27 @@ public abstract class ProcessHelper {
     }
 
     public static int exec(String command, String[] envp, File workingDir, Callback<Integer> terminationCallback) {
+        return exec(command, envp, workingDir, terminationCallback, null);
+    }
+
+    /**
+     * Same as {@link #exec(String, String[], File, Callback)} but when {@code outputLogTag} is non-null,
+     * stdout and stderr of the process are logged to logcat under that tag (e.g. "GameLaunch" for Wine/game output).
+     */
+    public static int exec(String command, String[] envp, File workingDir, Callback<Integer> terminationCallback, String outputLogTag) {
+        return exec(splitCommand(command), envp, workingDir, terminationCallback, outputLogTag);
+    }
+
+    /**
+     * Execute with an explicit argument array (no shell parsing). Use this when the command line
+     * must not be re-parsed (e.g. launcher script + wine args) so all arguments reach the process.
+     */
+    public static int exec(String[] cmdarray, String[] envp, File workingDir, Callback<Integer> terminationCallback, String outputLogTag) {
         int pid = -1;
         java.lang.Process process = null;
         try {
-            Log.d("ProcessHelper", "Executing: " + Arrays.toString(splitCommand(command)) + ", " + Arrays.toString(envp) + ", " + workingDir);
-            process = Runtime.getRuntime().exec(splitCommand(command), envp, workingDir);
+            Log.d("ProcessHelper", "Executing: " + Arrays.toString(cmdarray).replaceAll("(.{200}).*", "$1...") + ", " + workingDir);
+            process = Runtime.getRuntime().exec(cmdarray, envp, workingDir);
 
             Field pidField = process.getClass().getDeclaredField("pid");
             pidField.setAccessible(true);
@@ -95,9 +112,10 @@ public abstract class ProcessHelper {
                 createDebugThread(process.getInputStream());
                 createDebugThread(process.getErrorStream());
             }
-//            Uncomment the following lines to see logs from wine
-//            createDebugThread(process.getInputStream(), "STDOUT", pid);
-//            createDebugThread(process.getErrorStream(), "STDERR", pid);
+            if (outputLogTag != null) {
+                createDebugThreadWithTag(process.getInputStream(), "STDOUT", pid, outputLogTag);
+                createDebugThreadWithTag(process.getErrorStream(), "STDERR", pid, outputLogTag);
+            }
 
             if (terminationCallback != null) createWaitForThread(process, terminationCallback);
         }
@@ -209,6 +227,31 @@ public abstract class ProcessHelper {
                 }
             }
             catch (IOException e) {}
+        });
+    }
+
+    /** Logs each line from the process stream to logcat under the given tag (e.g. GameLaunch for Wine/game output).
+     * Uses UTF-8 so Wine debug output is not corrupted. Logs line count when stream ends for diagnostics. */
+    private static void createDebugThreadWithTag(final InputStream inputStream, final String streamType, final int pid, final String logTag) {
+        Executors.newSingleThreadExecutor().execute(() -> {
+            int lineCount = 0;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    lineCount++;
+                    if (streamType != null && pid != -1) {
+                        Log.d(logTag, "[" + streamType + "][pid " + pid + "] " + line);
+                    } else {
+                        Log.d(logTag, line);
+                    }
+                }
+                Log.d(logTag, "[" + streamType + "] stream ended, " + lineCount + " lines read (0 on stderr often means Wine debug not emitted or process exited before flush)");
+                if (lineCount <= 5 && "GameLaunch".equals(logTag))
+                    Log.w(logTag, "Pipe closed after " + lineCount + " line(s). Process may still be running (loading) or may have exited. When it exits you'll see 'Guest exit callback' and 'wine:' dump.");
+            }
+            catch (IOException e) {
+                Log.e(logTag, "Error reading process " + streamType + " (after " + lineCount + " lines): " + e.getMessage());
+            }
         });
     }
 

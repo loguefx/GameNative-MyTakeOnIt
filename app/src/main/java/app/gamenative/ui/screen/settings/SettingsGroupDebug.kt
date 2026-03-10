@@ -29,6 +29,7 @@ import app.gamenative.ui.theme.settingsTileColorsDebug
 import com.alorma.compose.settings.ui.SettingsGroup
 import com.alorma.compose.settings.ui.SettingsMenuLink
 import com.alorma.compose.settings.ui.SettingsSwitch
+import app.gamenative.Constants
 import app.gamenative.PrefManager
 import app.gamenative.ui.theme.settingsTileColorsAlt
 import com.winlator.PrefManager as WinlatorPrefManager
@@ -38,24 +39,42 @@ import java.io.File
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import app.gamenative.ui.component.dialog.WineDebugChannelsDialog
+import timber.log.Timber
 
 @Suppress("UnnecessaryOptInAnnotation") // ExperimentalFoundationApi
 @OptIn(ExperimentalCoilApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun SettingsGroupDebug() {
     val context = LocalContext.current
-    // initialize preference managers
-    PrefManager.init(context)
-    WinlatorPrefManager.init(context)
+    // initialize preference managers (defensive so Debug screen never crashes)
+    try {
+        PrefManager.init(context)
+        WinlatorPrefManager.init(context)
+    } catch (e: Exception) {
+        Timber.w(e, "PrefManager init failed in Debug screen")
+    }
 
-    // Load Wine debug channels and prepare selection state
+    // Load Wine debug channels and prepare selection state (fallback if asset missing so Debug screen never crashes)
     var allWineChannels by remember { mutableStateOf<List<String>>(emptyList()) }
     var showChannelsDialog by remember { mutableStateOf(false) }
-    var selectedWineChannels by remember { mutableStateOf(PrefManager.wineDebugChannels.split(",")) }
+    var selectedWineChannels by remember {
+        mutableStateOf(
+            try {
+                PrefManager.wineDebugChannels.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            } catch (_: Exception) {
+                Constants.XServer.DEFAULT_WINE_DEBUG_CHANNELS.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            }
+        )
+    }
     LaunchedEffect(Unit) {
-        // Read the list of channels from assets
-        val json = context.assets.open("wine_debug_channels.json").bufferedReader().use { it.readText() }
-        allWineChannels = Json.decodeFromString(json)
+        allWineChannels = try {
+            context.assets.open("wine_debug_channels.json").bufferedReader().use { it.readText() }.let { json ->
+                Json.decodeFromString<List<String>>(json)
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Could not load wine_debug_channels.json; using default list")
+            listOf("warn", "err", "fixme", "loaddll", "trace", "relay", "heap", "thread")
+        }
     }
 
     // Dialog for selecting channels
@@ -73,15 +92,22 @@ fun SettingsGroupDebug() {
 
     /* Crash Log stuff */
     var showLogcatDialog by rememberSaveable { mutableStateOf(false) }
-    // states for debug toggles
-    var enableWineDebugPref by rememberSaveable { mutableStateOf(PrefManager.enableWineDebug) }
-    var enableBox86Logs by rememberSaveable { mutableStateOf(WinlatorPrefManager.getBoolean("enable_box86_64_logs", false)) }
+    // states for debug toggles (defensive reads so DataStore/init failures don't crash the Debug screen)
+    var enableWineDebugPref by rememberSaveable {
+        mutableStateOf(try { PrefManager.enableWineDebug } catch (_: Exception) { false })
+    }
+    var enableBox86Logs by rememberSaveable {
+        mutableStateOf(try { WinlatorPrefManager.getBoolean("enable_box86_64_logs", false) } catch (_: Exception) { false })
+    }
     var latestCrashFile: File? by rememberSaveable { mutableStateOf(null) }
     LaunchedEffect(Unit) {
-        val crashDir = File(context.getExternalFilesDir(null), "crash_logs")
-        latestCrashFile = crashDir.listFiles()
-            ?.filter { it.name.startsWith("pluvia_crash_") }
-            ?.maxByOrNull { it.lastModified() }
+        try {
+            val baseDir = context.getExternalFilesDir(null) ?: return@LaunchedEffect
+            val crashDir = File(baseDir, "crash_logs")
+            latestCrashFile = crashDir.listFiles()
+                ?.filter { it.name.startsWith("pluvia_crash_") }
+                ?.maxByOrNull { it.lastModified() }
+        } catch (_: Exception) { /* ignore */ }
     }
 
     /* Save crash log */
@@ -134,10 +160,13 @@ fun SettingsGroupDebug() {
     var showWineLogDialog by rememberSaveable { mutableStateOf(false) }
     var latestWineLogFile: File? by rememberSaveable { mutableStateOf(null) }
     LaunchedEffect(Unit) {
-        val wineLogDir = File(context.getExternalFilesDir(null), "wine_logs")
-        wineLogDir.mkdirs()
-        val wineLogFile = File(wineLogDir, "wine_debug.log")
-        latestWineLogFile = if (wineLogFile.exists()) wineLogFile else null
+        try {
+            val baseDir = context.getExternalFilesDir(null) ?: return@LaunchedEffect
+            val wineLogDir = File(baseDir, "wine_logs")
+            wineLogDir.mkdirs()
+            val wineLogFile = File(wineLogDir, "wine_debug.log")
+            latestWineLogFile = if (wineLogFile.exists()) wineLogFile else null
+        } catch (_: Exception) { /* ignore */ }
     }
     val saveWineLogContract = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/plain"),
@@ -234,7 +263,7 @@ fun SettingsGroupDebug() {
             modifier = Modifier.combinedClickable(
                 onLongClick = {
                     SteamService.logOut()
-                    (context as ComponentActivity).finishAffinity()
+                    (context as? ComponentActivity)?.finishAffinity()
                 },
                 onClick = {
                     Toast.makeText(context, "Long click to activate", Toast.LENGTH_SHORT).show()
@@ -251,7 +280,7 @@ fun SettingsGroupDebug() {
                 onLongClick = {
                     SteamService.stop()
                     SteamService.clearDatabase()
-                    (context as ComponentActivity).finishAffinity()
+                    (context as? ComponentActivity)?.finishAffinity()
                 },
                 onClick = {
                     Toast.makeText(context, "Long click to activate", Toast.LENGTH_SHORT).show()
@@ -297,7 +326,7 @@ private fun readTail(file: File?): String {
                 raf.seek(start)
                 val bytes = ByteArray((len - start).toInt())
                 raf.readFully(bytes)
-                val text = bytes.toString(Charsets.UTF_8)
+                val text = String(bytes, Charsets.UTF_8)
                 // drop partial first line
                 val idx = text.indexOf('\n')
                 val trimmed = if (idx >= 0) text.substring(idx + 1) else text

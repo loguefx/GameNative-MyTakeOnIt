@@ -1,10 +1,15 @@
 package app.gamenative.launch
 
 import android.content.Context
+import app.gamenative.adaptive.AdaptivePrelaunchTuner
+import app.gamenative.adaptive.CrashRecoveryManager
 import app.gamenative.compat.CompatibilityDb
 import app.gamenative.config.GameConfig
 import app.gamenative.config.GameConfigRecommender
 import app.gamenative.config.GameConfigStore
+import app.gamenative.config.KnownGameFixes
+import app.gamenative.detection.GameEngineDetector
+import app.gamenative.detection.GameExeScanner
 import app.gamenative.hardware.HardwareProfileCache
 import app.gamenative.isolation.GamePaths
 import app.gamenative.preflight.PreflightResult
@@ -101,43 +106,123 @@ object LaunchOrchestrator {
     }
 
     /**
-     * Resolves GameConfig for launch: load saved from GameConfigStore first; if none, run
-     * recommender and optionally save. Call from a coroutine or runBlocking when already on a worker thread.
+     * Full game config resolution pipeline:
+     *
+     *  1. Return saved config if the user has already customized settings for this game.
+     *  2. Run EXE scanner to detect DirectX version and audio dependencies.
+     *  3. Run engine detector to fingerprint the game engine.
+     *  4. Feed results into GameConfigRecommender for a hardware-optimized config.
+     *  5. Apply crash recovery downgrade if the game has a crash history.
+     *  6. Apply pre-launch adaptive tuning (thermal headroom + available RAM right now).
+     *  7. Save the produced config so future launches skip steps 2–6 unless the game is updated.
+     *
+     * Call from a coroutine scope — never from the main thread.
+     *
+     * @param gameExeFile  Optional path to the game EXE for DirectX/audio auto-detection.
+     *                     Pass null to skip scanning (e.g. for non-executable game types).
+     * @param gameInstallDir  Optional game install directory for engine fingerprinting.
      */
     suspend fun resolveGameConfig(
         context: Context,
         appId: String,
         gameName: String,
         steamAppId: Long,
+        gameExeFile: File? = null,
+        gameInstallDir: File? = null,
         saveIfFromRecommender: Boolean = true,
     ): GameConfig {
+        // Step 1 — return saved user config (preserves manual customizations)
         val saved = GameConfigStore.load(context, appId)
-        if (saved != null) return saved
+        if (saved != null) {
+            // Even for saved configs, apply crash recovery and adaptive tuning.
+            // Crash recovery can downgrade a saved config when the game keeps crashing;
+            // adaptive tuning ensures it fits current thermal/memory conditions.
+            val recovered = CrashRecoveryManager.applyRecovery(context, appId, saved)
+            return AdaptivePrelaunchTuner.tune(recovered, context)
+        }
+
+        // Step 2 — EXE scan: detect DX version, XAudio2, mfplat from import table
+        val scanResult = if (gameExeFile != null) {
+            GameExeScanner.scan(appId, gameExeFile)
+        } else {
+            app.gamenative.detection.ExeScanResult(dxVersion = app.gamenative.config.DxVersion.AUTO)
+        }
+
+        // Step 3 — engine detection: fingerprint game engine from install dir
+        val engineHint = if (gameInstallDir != null) {
+            GameEngineDetector.detect(gameInstallDir)
+        } else {
+            app.gamenative.detection.EngineHint.UNKNOWN
+        }
+
+        if (scanResult.dxVersion != app.gamenative.config.DxVersion.AUTO || engineHint != app.gamenative.detection.EngineHint.UNKNOWN) {
+            Timber.tag("GameLaunch").i(
+                "Auto-detected: dx=${scanResult.dxVersion} engine=${engineHint.name} " +
+                    "xaudio=${scanResult.needsXAudio2Override} mfplat=${scanResult.needsMfplatOverride}",
+            )
+        }
+
+        // Step 4 — recommender: build hardware-optimal config using all detected inputs
         CompatibilityDb.load(context)
         val hardware = HardwareProfileCache.getProfile(context)
         val protonTier = CompatibilityDb.getProtonTierFor(steamAppId)
         val config = GameConfigRecommender.recommend(
-            appId = steamAppId.toInt(),
-            gameName = gameName,
-            hardware = hardware,
+            appId      = steamAppId.toInt(),
+            gameName   = gameName,
+            hardware   = hardware,
             protonTier = protonTier,
+            scanResult = scanResult,
+            engineHint = engineHint,
         )
+
+        // Step 5 — crash recovery: downgrade config if game has a crash history
+        val recovered = CrashRecoveryManager.applyRecovery(context, appId, config)
+
+        // Step 6 — adaptive pre-launch tuning: scale down for current thermal + memory pressure
+        val tuned = AdaptivePrelaunchTuner.tune(recovered, context)
+
+        // Step 7 — persist so the next launch is fast (skips steps 2–6)
         if (saveIfFromRecommender) {
+            // Save the recommender result (not the tuned one) so the saved config reflects
+            // the game's true recommended settings, not a momentary thermal reduction.
             GameConfigStore.save(context, appId, config)
         }
-        return config
+        return tuned
+    }
+
+    /**
+     * Record a game exit for crash recovery tracking.
+     * Call from the guest exit callback in XServerScreen / SteamService.
+     */
+    suspend fun recordGameExit(
+        context: Context,
+        appId: String,
+        exitCode: Int,
+        playDurationMs: Long,
+    ) {
+        CrashRecoveryManager.recordExit(context, appId, exitCode, playDurationMs)
     }
 
     /**
      * Applies full GameConfig to env. Call after base container env and DXVKHelper.
-     * KnownGameFixes.extraEnvVars are applied last with put (not putIfAbsent) so they win unconditionally.
+     * KnownGameFixes.extraEnvVars are always applied last (even over a saved config) so they win
+     * unconditionally regardless of whether the user has a persisted config for this game.
      */
     fun applyGameConfig(context: Context, appId: String, config: GameConfig, envVars: EnvVars) {
-        // DXVK
+        // ── DXVK ─────────────────────────────────────────────────────────────────────
         envVars.put("DXVK_ASYNC", if (config.dxvkAsync) "1" else "0")
-        envVars.put("DXVK_CONFIG_FILE", GamePaths.getDxvkConfigPath(context, appId))
-        writeDxvkConfig(context, appId, config)
         envVars.put("DXVK_GPLASYNCCACHE", if (config.dxvkAsync) "1" else "0")
+
+        // Write the per-game dxvk.conf and point DXVK_CONFIG_FILE at it.
+        // DXVK_CONFIG_FILE is sufficient — DXVK_ASYNC=1 and DXVK_GPLASYNCCACHE=1 are already
+        // set unconditionally by DXVKHelper (see DXVKHelper.java). We do NOT override the
+        // DXVK_CONFIG env var here: the "Wrapper" graphics driver uses D8VK (DXVK's OpenGL
+        // backend) which does not recognise all standard-DXVK config keys. Injecting an inline
+        // config with unrecognised keys (dxvk.hud, dxvk.presentMode, etc.) causes D8VK to abort
+        // its initialisation, producing a black screen immediately on launch.
+        val dxvkConfigPath = GamePaths.getDxvkConfigPath(context, appId)
+        envVars.put("DXVK_CONFIG_FILE", dxvkConfigPath)
+        writeDxvkConfig(context, appId, config)
 
         // VKD3D
         if (config.vkd3dEnabled) {
@@ -151,7 +236,7 @@ object LaunchOrchestrator {
         // Wine sync
         envVars.put("WINEESYNC", if (config.esyncEnabled) "1" else "0")
         envVars.put("WINEFSYNC", if (config.fsyncEnabled) "1" else "0")
-        envVars.put("WINEDEBUG", if (config.wineDebug) "" else "-all")
+        // WINEDEBUG is set in XServerScreen from Settings > Debug (PrefManager); do not overwrite here so global Wine debug applies to all launches.
 
         // Box64
         envVars.put("BOX64_DYNAREC_BIGBLOCK", if (config.box64BigBlock) "1" else "0")
@@ -180,9 +265,29 @@ object LaunchOrchestrator {
             }
         }
 
-        // KnownGameFixes.extraEnvVars last — must use put so overrides win unconditionally (never putIfAbsent)
+        // config.extraEnvVars (from recommender or saved config) applied first.
         config.extraEnvVars.forEach { (key, value) ->
             envVars.put(key, value)
+        }
+
+        // KnownGameFixes ALWAYS wins — re-apply even if a saved config already set different values.
+        // This ensures fixes like mfplat.dll=n,b for BioShock 2 are never lost to a stale saved config.
+        val steamAppId = try { appId.toLong() } catch (_: Exception) {
+            try { appId.substringAfterLast("_").toLong() } catch (_: Exception) { 0L }
+        }
+        if (steamAppId != 0L) {
+            KnownGameFixes.get(steamAppId.toInt())?.let { fix ->
+                fix.extraEnvVars.forEach { (key, value) -> envVars.put(key, value) }
+                if (fix.launchArgs.isNotEmpty()) {
+                    envVars.put("GN_WINE_LAUNCH_ARGS", fix.launchArgs)
+                }
+            }
+        }
+
+        // If no KnownGameFix overrode launch args, use the config's wineLaunchArgs (from recommender).
+        // Game-specific launch args flow into ColdClientLoader.ini ExeCommandLine via GN_WINE_LAUNCH_ARGS.
+        if (envVars.get("GN_WINE_LAUNCH_ARGS").isEmpty() && config.wineLaunchArgs.isNotEmpty()) {
+            envVars.put("GN_WINE_LAUNCH_ARGS", config.wineLaunchArgs)
         }
     }
 

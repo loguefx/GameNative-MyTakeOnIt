@@ -255,8 +255,17 @@ class MainViewModel @Inject constructor(
     fun launchApp(context: Context, appId: String) {
         // Show booting splash before launching the app
         viewModelScope.launch {
+            bootingSplashTimeoutJob?.cancel()
             setShowBootingSplash(true)
             PluviaApp.events.emit(AndroidEvent.SetAllowedOrientation(PrefManager.allowedOrientation))
+
+            // If no window is mapped within 45s, hide splash so user is not stuck (game may still be loading or stuck)
+            bootingSplashTimeoutJob = viewModelScope.launch {
+                delay(45_000)
+                bootingSplashTimeoutJob = null
+                setShowBootingSplash(false)
+                showToast("Launch taking a while? Splash dismissed. Filter logcat by 'GameLaunch' for details.")
+            }
 
             try {
                 Timber.tag("GameLaunch").i("launchApp started appId=$appId")
@@ -268,7 +277,10 @@ class MainViewModel @Inject constructor(
                         if (container.isLaunchRealSteam()) {
                             SteamUtils.restoreSteamApi(context, appId)
                         } else {
-                            if (container.isUseLegacyDRM) {
+                            val gameIdInt = ContainerUtils.extractGameIdFromContainerId(appId)
+                            val gameFix = app.gamenative.config.KnownGameFixes.get(gameIdInt)
+                            val useLegacyDrm = container.isUseLegacyDRM || (gameFix?.forceUseLegacyDrm == true)
+                            if (useLegacyDrm) {
                                 SteamUtils.replaceSteamApi(context, appId)
                             } else {
                                 SteamUtils.replaceSteamclientDll(context, appId)
@@ -284,6 +296,8 @@ class MainViewModel @Inject constructor(
                 Timber.tag("GameLaunch").i("launchApp emitting LaunchApp for appId=$appId")
                 _uiEvent.send(MainUiEvent.LaunchApp)
             } catch (e: Exception) {
+                bootingSplashTimeoutJob?.cancel()
+                bootingSplashTimeoutJob = null
                 setShowBootingSplash(false)
                 Timber.tag("GameLaunch").e(e, "launchApp failed appId=$appId")
                 _uiEvent.send(
@@ -458,8 +472,9 @@ class MainViewModel @Inject constructor(
             bootingSplashTimeoutJob = null
             setShowBootingSplash(false)
 
-            // You could also show an error dialog here if needed
             Timber.tag("MainViewModel").e("Game launch error: $error")
+            // Show error dialog so user sees why the game did not start (not just "debugger" or black screen)
+            _uiEvent.send(MainUiEvent.LaunchFailed(error))
         }
     }
 

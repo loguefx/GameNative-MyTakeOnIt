@@ -1,0 +1,164 @@
+---
+description: Game compatibility system — how to add new games, per-engine fix patterns, and max-FPS tuning for Adreno/Turnip. Apply when editing KnownGameFixes, GameConfigRecommender, LaunchOrchestrator, or any game-specific env/config.
+globs: ["**/KnownGameFixes*", "**/GameConfig*", "**/LaunchOrchestrator*", "**/GameConfigRecommender*", "**/HardwareDetector*"]
+alwaysApply: false
+---
+
+# GameNative — Game Compatibility & Max-FPS Guide
+
+## Architecture Overview
+
+```
+KnownGameFixes     → per-game hardcoded fixes (always wins)
+      ↓
+GameConfigRecommender → hardware-based defaults for unrecognized games
+      ↓
+LaunchOrchestrator.applyGameConfig → writes env vars to Wine process
+      ↓
+LaunchOrchestrator.applyIsolationEnv → per-game cache paths + driver vars
+```
+
+**Priority rule**: `KnownGameFixes.extraEnvVars` **always** overrides everything.
+Applied last via `envVars.put(key, value)` (not `putIfAbsent`) in `applyGameConfig`.
+
+---
+
+## Adding a New Game
+
+Add an entry to the `fixes` map in `KnownGameFixes.kt`:
+
+```kotlin
+123456 to GameFix(
+    appId = 123456,
+    gameName = "Game Name",
+    protonVersion = ProtonVersion.PROTON_9_0,   // omit to use recommender default
+    dxVersion = DxVersion.DX11,                  // omit for AUTO detection
+    resolutionScale = 0.75f,                     // omit for hardware-based default
+    forceUseLegacyDrm = false,                   // true only for Aspyr/sub-launcher games
+    gameExePath = "",                            // non-empty only when forceUseLegacyDrm=true
+    extraEnvVars = mapOf(
+        "DXVK_ASYNC" to "1",
+        "DXVK_GPLASYNCCACHE" to "1",
+    ),
+    launchArgs = "",
+    reason = "One sentence explaining why this fix is needed",
+),
+```
+
+**Minimum viable fix for any unrecognized DX11 game** — just this gets it booting:
+```kotlin
+extraEnvVars = mapOf("DXVK_ASYNC" to "1", "DXVK_GPLASYNCCACHE" to "1")
+```
+
+---
+
+## Pattern Library by Engine / DX Version
+
+### DX9 games (Source Engine, UE3, id Tech 4, old Aspyr ports)
+```kotlin
+dxVersion = DxVersion.DX9
+extraEnvVars = mapOf(
+    "DXVK_ASYNC" to "1",
+    "DXVK_GPLASYNCCACHE" to "1",
+    "WINEDLLOVERRIDES" to "mfplat.dll=n,b;xaudio2_7.dll=n,b",
+    "PULSE_LATENCY_MSEC" to "60",
+)
+// If game shows "browse for file" dialog → set forceUseLegacyDrm=true + gameExePath
+```
+
+### DX11 games (UE4, CryEngine, id Tech 6, RE Engine, most modern indie)
+```kotlin
+dxVersion = DxVersion.DX11
+protonVersion = ProtonVersion.PROTON_9_0  // 9.0 more stable than 10.0 for most DX11
+extraEnvVars = mapOf(
+    "DXVK_ASYNC" to "1",
+    "DXVK_GPLASYNCCACHE" to "1",
+)
+// Games with video/intro hangs: add "WINEDLLOVERRIDES" to "mfplat.dll=n,b;xaudio2_7.dll=n,b"
+```
+
+### DX12 games (UE5, id Tech 7, late RE Engine, Sony first-party ports)
+```kotlin
+dxVersion = DxVersion.DX12
+protonVersion = ProtonVersion.PROTON_9_0
+resolutionScale = 0.75f  // DX12 is more GPU-hungry on Adreno
+extraEnvVars = mapOf(
+    // Pipeline library cache: CRITICAL for DX12 — prevents massive stutter on Adreno
+    "VKD3D_CONFIG" to "pipeline_library_app_cache,no_upload_hvv,force_static_cbv",
+    "PROTON_ENABLE_NVAPI" to "0",   // disable NVAPI — wastes CPU, no benefit on ARM
+    "VKD3D_SHADER_MODEL" to "6_5", // Adreno 7xx supports 6_5 with Turnip
+)
+```
+
+### Unity games (any DX version)
+```kotlin
+dxVersion = DxVersion.DX11  // Unity defaults to DX11 on Wine
+extraEnvVars = mapOf("DXVK_ASYNC" to "1")
+// Most Unity games are Platinum on ProtonDB — no special fixes needed
+```
+
+### .NET / XNA / FNA games (Stardew Valley, Celeste, Terraria)
+```kotlin
+protonVersion = ProtonVersion.PROTON_9_0
+dxVersion = DxVersion.DX11
+extraEnvVars = mapOf("DXVK_ASYNC" to "1")
+// These run via Mono — very lightweight, excellent compatibility
+```
+
+---
+
+## Max-FPS Env Var Reference
+
+### Always-on for ALL Adreno/Turnip games (applied globally in `applyIsolationEnv`):
+| Variable | Value | Effect |
+|----------|-------|--------|
+| `TU_DEBUG` | `noconform` | Skip Turnip conformance tests — reduces GPU init time |
+| `mesa_glthread` | `true` | Mesa GL threading — offloads CPU-side GL work |
+| `MESA_NO_ERROR` | `1` | Skip GL error checking in Mesa — saves CPU per-call |
+| `MESA_SHADER_CACHE_MAX_SIZE` | `512MB` | Persistent ISA-level cache — zero shader recompile on relaunch |
+| `DXVK_GPLASYNCCACHE` | `1` | GPU-side async pipeline cache — companion to DXVK_ASYNC |
+
+### Per-game performance boosters (put in `KnownGameFixes.extraEnvVars`):
+| Variable | Value | Use Case |
+|----------|-------|----------|
+| `DXVK_ASYNC` | `1` | ALL DX9/10/11 games — prevent render thread shader stall |
+| `PULSE_LATENCY_MSEC` | `60` | Games with XAudio2 audio hang at startup |
+| `WINEDLLOVERRIDES` | `mfplat.dll=n,b;xaudio2_7.dll=n,b` | Games that hang playing intro videos |
+| `PROTON_ENABLE_NVAPI` | `0` | ALL DX12 games — disable NVAPI CPU waste |
+| `VKD3D_CONFIG` | `pipeline_library_app_cache,no_upload_hvv,force_static_cbv` | ALL DX12 games |
+
+### Never do:
+- Do NOT set `WINEDEBUG` to anything other than `-all` in production (kills 5–10% CPU)
+- Do NOT set `DXVK_HUD` in production builds
+- Do NOT set `strict_shader_math=1` in DXVK config for DX9/DX11 games on Adreno — causes incorrect shader output
+- Do NOT use `forceUseLegacyDrm=true` for games where `ColdClientLoader` works — only for Aspyr/sub-launcher titles
+
+---
+
+## `forceUseLegacyDrm` — When and Why
+
+Use **only** for games where `ColdClientLoader` (the Goldberg launcher) silently fails to `CreateProcess` the actual game exe. Symptoms:
+- Wine log shows `wfm.exe` starting but NOT the game exe
+- No `init_peb` line for the expected `.exe`
+- Typically Aspyr ports (UE3 titles), games with sub-launchers
+
+**Required fields when `forceUseLegacyDrm = true`:**
+```kotlin
+forceUseLegacyDrm = true,
+gameExePath = "relative/path/to/Game.exe",  // from game install dir, forward-slashes
+```
+Goldberg `steam_api64.dll` is replaced in-game dir via `MainViewModel.replaceSteamApi()`.
+
+---
+
+## ProtonVersion Selection Guide
+
+| ProtonDB Tier | Default | Notes |
+|--------------|---------|-------|
+| Platinum | 10.0 | Latest works fine |
+| Gold | 9.0 | Safer — many Gold games have 10.0 regressions |
+| Silver | 8.0 | Stick with stable 8.0 |
+| Bronze | 8.0 | High crash risk — try Compatibility preset |
+| Borked | Wine-GE | Last resort |
+
+**Override in KnownGameFixes** when a specific game is known to work better on a different version.

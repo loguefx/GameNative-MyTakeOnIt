@@ -201,6 +201,21 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
             envVars.put("LD_PRELOAD", "libredirect.so libandroid-sysvshm.so");
         envVars.put("WINEESYNC_WINLATOR", "1");
         if (this.envVars != null) envVars.putAll(this.envVars);
+        // Ensure Settings > Debug WINEDEBUG always wins (overrides container or any other source)
+        app.gamenative.PrefManager.INSTANCE.init(context);
+        boolean enableWineDebug = app.gamenative.PrefManager.INSTANCE.getEnableWineDebug();
+        String wineDebugChannels = app.gamenative.PrefManager.INSTANCE.getWineDebugChannels().trim();
+        String winedebugValue;
+        if (!enableWineDebug) {
+            winedebugValue = "-all";
+        } else if (wineDebugChannels.isEmpty()) {
+            winedebugValue = "+all";
+        } else {
+            winedebugValue = "+" + wineDebugChannels.replace(",", ",+").replace(" ", "");
+        }
+        Log.d("GlibcProgramLauncherComponent", "PrefManager enableWineDebug (read in Java): " + enableWineDebug);
+        Log.d("GlibcProgramLauncherComponent", "PrefManager wineDebugChannels (read in Java): " + wineDebugChannels);
+        envVars.put("WINEDEBUG", winedebugValue);
 
         String box64Path = rootDir.getPath() + "/usr/local/bin/box64";
 
@@ -220,7 +235,7 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
             }
             SteamService.setKeepAlive(false);
             if (terminationCallback != null) terminationCallback.call(status);
-        });
+        }, "GameLaunch");
     }
 
     private void extractBox64Files() {
@@ -300,6 +315,21 @@ public class GlibcProgramLauncherComponent extends GuestProgramLauncherComponent
             envVars.put("LD_PRELOAD", "libredirect.so libandroid-sysvshm.so");
         envVars.put("WINEESYNC_WINLATOR", "1");
         if (this.envVars != null) envVars.putAll(this.envVars);
+        // Ensure Settings > Debug WINEDEBUG always wins (overrides container or any other source)
+        app.gamenative.PrefManager.INSTANCE.init(context);
+        boolean enableWineDebug = app.gamenative.PrefManager.INSTANCE.getEnableWineDebug();
+        String wineDebugChannels = app.gamenative.PrefManager.INSTANCE.getWineDebugChannels().trim();
+        String winedebugValue;
+        if (!enableWineDebug) {
+            winedebugValue = "-all";
+        } else if (wineDebugChannels.isEmpty()) {
+            winedebugValue = "+all";
+        } else {
+            winedebugValue = "+" + wineDebugChannels.replace(",", ",+").replace(" ", "");
+        }
+        Log.d("GlibcProgramLauncherComponent", "PrefManager enableWineDebug (read in Java): " + enableWineDebug);
+        Log.d("GlibcProgramLauncherComponent", "PrefManager wineDebugChannels (read in Java): " + wineDebugChannels);
+        envVars.put("WINEDEBUG", winedebugValue);
 
         String box64Path = rootDir.getPath() + "/usr/local/bin/box64";
 

@@ -1,0 +1,219 @@
+---
+description: Auto-detection pipeline, adaptive runtime monitoring, memory management, and crash recovery — the intelligence layer that makes games work without user config. Apply when editing detection/, adaptive/, LaunchOrchestrator, GameConfigRecommender, or XServerScreen.
+globs: ["**/detection/**", "**/adaptive/**", "**/LaunchOrchestrator*", "**/GameConfigRecommender*", "**/XServerScreen*"]
+alwaysApply: false
+---
+
+# GameNative — Auto-Detection + Adaptive Performance System
+
+## Philosophy: Detect → Configure → Adapt → Recover
+
+1. **Detect** — scan the game's EXE and install directory to auto-discover DirectX version, engine, and audio dependencies. Never ask the user.
+2. **Configure** — build a GameConfig from detected facts + hardware profile. KnownGameFixes is an override database, not the primary source of truth.
+3. **Adapt** — sample thermal headroom and available RAM at launch time and scale the config down if the device is already under pressure.
+4. **Recover** — if a game crashes, automatically try a safer config on the next launch. Escalate conservatism with each crash; reset after clean exits.
+
+---
+
+## Detection Pipeline
+
+### `detection.GameExeScanner`
+
+Scans the game's main EXE file (available via `GamePaths.getGameExePath`) by reading the first 4 MB and searching for known import-table DLL name strings. Windows PE import tables store DLL names as plain ASCII, so a case-insensitive string search finds them without full PE header parsing.
+
+**Priority order** (highest DX version wins):
+```
+d3d12.dll  → DxVersion.DX12
+d3d11.dll  → DxVersion.DX11
+dxgi.dll   → DxVersion.DX11  (DXGI ships with DX11/12)
+d3d10.dll  → DxVersion.DX10
+d3d9.dll   → DxVersion.DX9
+vulkan-1.dll → DxVersion.AUTO  (native Vulkan — Proton handles via DXVK's DX11 Vulkan path)
+```
+
+**Also detect from EXE bytes:**
+```
+xaudio2_*.dll   → needsXAudio2Override = true  → WINEDLLOVERRIDES += xaudio2_7=n,b
+mfplat.dll      → needsMfplatOverride  = true  → WINEDLLOVERRIDES += mfplat.dll=n,b
+xinput*.dll     → needsXInput = true           → controller input wiring
+```
+
+**Cache result** by `(appId, exeFile.lastModified())` in DataStore so re-scan only happens after game update.
+
+### `detection.GameEngineDetector`
+
+Walks the game install directory, looking for engine-identifying files:
+
+| File / Pattern | Engine |
+|---|---|
+| `UnityPlayer.dll` | Unity |
+| `GameAssembly.dll` OR `mono.dll` | Unity (IL2CPP / Mono) |
+| `*-Win64-Shipping.exe` OR `Engine/Binaries/` | Unreal Engine 4/5 |
+| `fna.dll` OR `FNA.dll` | FNA (XNA-compatible) |
+| `MonoBleedingEdge/` directory | Mono/.NET |
+| `RenderDoc*.dll` | Dev build (not relevant) |
+| `RE_RSZ.ini` OR `re_chunk_000.pak` | RE Engine (Capcom) |
+| `idTech*.dll` OR `*.resources` + `Oodle*` | id Tech 6/7 |
+| `steam_api64.dll` alone | Unknown engine with Steamworks |
+
+**EngineHint enum:**
+```kotlin
+UNITY, UNREAL_4, UNREAL_5, RE_ENGINE, FNA, MONO_NET, ID_TECH, SOURCE, SOURCE_2, UNKNOWN
+```
+
+**Engine → Proton affinity table (used when ProtonDB tier is unavailable):**
+
+| Engine | Preferred Proton | Why |
+|---|---|---|
+| `UNITY` | `PROTON_10_0` | Unity Vulkan backend works best on 10.0 |
+| `UNREAL_4` | `PROTON_9_0` | UE4 shader compiler regression in Proton 10.0 |
+| `UNREAL_5` | `PROTON_10_0` | UE5 needs Proton 10 for SM6 shader model |
+| `RE_ENGINE` | `PROTON_9_0` | RE Engine DX12 PSO pipeline more stable on 9.0 |
+| `FNA` / `MONO_NET` | `PROTON_9_0` | .NET runtime quirks resolved in 9.0 |
+| `ID_TECH` | `PROTON_9_0` | id Tech 7 DX12 path more tested on 9.0 |
+| `SOURCE_2` | `PROTON_10_0` | Source 2 Vulkan support improved in 10.0 |
+
+---
+
+## Adaptive Pre-Launch Tuner
+
+### `adaptive.AdaptivePrelaunchTuner`
+
+Runs immediately before launch on a **fresh GameConfig** from the recommender or saved store.  
+Adjusts config fields based on **current** device state — not hardware maximums.
+
+```kotlin
+fun tune(config: GameConfig, context: Context): GameConfig {
+    val thermal  = powerManager.getThermalHeadroom(5).coerceIn(0f, 1f)
+    val availMb  = activityManager.getMemoryInfo().availMem / (1024 * 1024)
+
+    val fpsLimit = when {
+        thermal < 0.20f -> minOf(config.fpsLimit.ifUncapped(60), 30)  // device already hot
+        thermal < 0.40f -> minOf(config.fpsLimit.ifUncapped(60), 45)  // warming up
+        else            -> config.fpsLimit
+    }
+    val dxvkBudget = when {
+        availMb < 1_800 -> 1_024   // critically low — minimal DXVK footprint
+        availMb < 3_000 -> 1_536   // low — conservative budget
+        else            -> config.dxvkDeviceLocalMemoryMiB
+    }
+    val resScale = when {
+        availMb < 1_800 -> 0.65f.coerceAtMost(config.resolutionScale)
+        availMb < 2_500 -> 0.75f.coerceAtMost(config.resolutionScale)
+        else            -> config.resolutionScale
+    }
+    return config.copy(fpsLimit = fpsLimit, dxvkDeviceLocalMemoryMiB = dxvkBudget, resolutionScale = resScale)
+}
+```
+
+**Do NOT tune DXVK_ASYNC, ESYNC, FSYNC, or CPU affinity** — those are always-on and have no downside.
+
+---
+
+## Runtime Adaptive Monitor
+
+### `adaptive.RuntimeGameMonitor`
+
+Runs as a background coroutine during gameplay. Emits `AdaptiveEvent` states at 5-second intervals. **Does not change game config mid-session** — config is write-once at launch. Instead, it drives UI overlays and informs the tuner for the *next* launch.
+
+```kotlin
+sealed class AdaptiveEvent {
+    data class ThermalWarning(val headroom: Float) : AdaptiveEvent()
+    data class MemoryWarning(val availableMb: Long)  : AdaptiveEvent()
+    object ThermalRecovered  : AdaptiveEvent()
+    object MemoryRecovered   : AdaptiveEvent()
+}
+
+// Emit thresholds
+thermal  < 0.20f  → ThermalWarning (show "Device overheating" banner in XServerScreen)
+availMb  < 1_500  → MemoryWarning  (show "Low memory" banner)
+thermal  > 0.50f  → ThermalRecovered (dismiss banner)
+availMb  > 2_500  → MemoryRecovered  (dismiss banner)
+```
+
+**XServerScreen** collects this Flow and shows/hides a non-dismissible warning bar at the top of the game view. The bar uses `gnAccentWarn (#FF9800)` tint and auto-dismisses when condition resolves.
+
+---
+
+## Crash Recovery
+
+### `adaptive.CrashRecoveryManager`
+
+Tracks crash history per game per config. When a game exits with non-zero status, increments crash count. On the next launch, if crash count >= threshold, progressively steps down the config until stable.
+
+**Recovery ladder (applies in order until a config produces 3 clean exits):**
+
+| Step | What changes |
+|---|---|
+| Step 0 (default) | Full recommended config |
+| Step 1 (1 crash) | Disable VSync, drop resolution by 0.10x |
+| Step 2 (2 crashes) | Force `ConfigPreset.COMPATIBILITY` — DX11, Proton 8.0, 0.75x scale, no VKD3D |
+| Step 3 (3 crashes) | Force DX9 (DXVK), Proton 8.0, 0.65x scale, `WINEDLLOVERRIDES=d3d11=b;d3d12=b` |
+| Step 4 (4 crashes) | Force Wine-GE, DX9, 0.5x scale — last resort before showing "Cannot Run" screen |
+
+**Clean exit** = exit code 0 or process ran > 60 seconds without an exit-code crash signal.  
+After 3 consecutive clean exits at a recovery step, reset to Step 0 for the next launch.
+
+**Storage**: `DataStore<Preferences>` key `"crash_recovery_${appId}"` stores JSON:
+```json
+{ "crashCount": 2, "cleanExits": 0, "step": 2, "lastCrashMs": 1711000000000 }
+```
+
+---
+
+## Dynamic Memory Management
+
+### Memory pressure thresholds
+
+| Available RAM | Action |
+|---|---|
+| > 4 GB | Full DXVK budget (40% of total RAM), native resolution |
+| 2.5–4 GB | DXVK budget = 1.8 GB, resolution unchanged |
+| 1.8–2.5 GB | DXVK budget = 1.2 GB, resolution −0.10x |
+| < 1.8 GB | DXVK budget = 1 GB, resolution −0.25x, disable VKD3D if DX11 possible |
+
+### Shader cache eviction
+
+At game launch, check total size of all shader caches under `GamePaths.getDxvkCacheDir()`.  
+If total > 2 GB, evict caches for games not launched in 30+ days (sorted by last access time).  
+Log eviction with `Timber.tag("ShaderCache")` so the user can see it in diagnostics.
+
+### Wine memory settings
+
+Inside the container launch script, always set these before Wine starts — they prevent Wine from fragmenting the heap and reduce OOM risk:
+
+```bash
+export WINEDEBUG=-all                     # no logging overhead
+export STAGING_SHARED_MEMORY=1            # use shared memory for IPC (less duplication)
+export WINE_LARGE_ADDRESS_AWARE=1         # allow 32-bit games to access > 2 GB
+ulimit -n 1048576                         # ESYNC requirement — must not be removed
+```
+
+---
+
+## Full Launch Pipeline (in order)
+
+```
+1. GameExeScanner.scan(exeFile)          → ExeScanResult  (or cached)
+2. GameEngineDetector.detect(gameDir)    → EngineHint     (or cached)
+3. LaunchOrchestrator.resolveGameConfig  → GameConfig     (saved OR recommender)
+   └── GameConfigRecommender.recommend(appId, gameName, hardware, protonTier, scanResult, engineHint)
+4. CrashRecoveryManager.applyRecovery(config, appId)  → adjusted GameConfig
+5. AdaptivePrelaunchTuner.tune(config, context)        → final GameConfig
+6. LaunchOrchestrator.applyGameConfig(config, envVars)
+7. LaunchOrchestrator.applyIsolationEnv(appId, envVars)
+8. Wine process starts
+   └── RuntimeGameMonitor.monitor() runs in background
+       └── XServerScreen shows/hides warning overlays
+9. On game exit: CrashRecoveryManager.recordExit(appId, exitCode, durationMs)
+```
+
+---
+
+## DO NOTs
+
+- Do NOT add a `KnownGameFix` entry just because `GameExeScanner` would detect the right DX version anyway. Only add `KnownGameFix` when the game has a *specific quirk* the scanner cannot detect (e.g. ColdClientLoader failure, broken bundled DLL, specific Wine DLL override).
+- Do NOT run `GameExeScanner` or `GameEngineDetector` on the main thread — always on `Dispatchers.IO`.
+- Do NOT change the DXVK config file or env vars while the game is running — write-once at launch. The `RuntimeGameMonitor` is read-only.
+- Do NOT store crash history in SharedPreferences — use DataStore so it survives process death correctly.
+- Do NOT escalate resolution or FPS above the recommender's maximum based on clean exit history — only *reduce* as recovery, never auto-increase beyond hardware tier limits.

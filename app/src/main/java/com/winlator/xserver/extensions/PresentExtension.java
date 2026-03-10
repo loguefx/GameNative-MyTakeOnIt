@@ -2,6 +2,7 @@ package com.winlator.xserver.extensions;
 
 import static com.winlator.xserver.XClientRequestHandler.RESPONSE_CODE_SUCCESS;
 
+import android.util.Log;
 import android.util.SparseArray;
 
 import com.winlator.renderer.GPUImage;
@@ -36,6 +37,7 @@ public class PresentExtension implements Extension {
     public enum Mode {COPY, FLIP, SKIP}
     private final SparseArray<Event> events = new SparseArray<>();
     private SyncExtension syncExtension;
+    private int presentPixmapCount = 0;
 
     private static abstract class ClientOpcodes {
         private static final byte QUERY_VERSION = 0;
@@ -136,6 +138,13 @@ public class PresentExtension implements Extension {
             sendIdleNotify(window, pixmap, serial, idleFence);
             sendCompleteNotify(window, serial, Kind.PIXMAP, Mode.COPY, ust, msc);
         }
+        presentPixmapCount++;
+        if (presentPixmapCount <= 3 || presentPixmapCount % 60 == 0) {
+            Log.d("PresentExtension", "presentPixmap windowId=" + windowId + " (frame #" + presentPixmapCount + ")");
+        }
+        // Request redraw on GL thread so DXVK/Vulkan presents are visible (RENDERMODE_WHEN_DIRTY)
+        final XServerView xServerView = client.xServer.getRenderer().xServerView;
+        xServerView.queueEvent(xServerView::requestRender);
     }
 
     private void selectInput(XClient client, XInputStream inputStream, XOutputStream outputStream) throws IOException, XRequestError {

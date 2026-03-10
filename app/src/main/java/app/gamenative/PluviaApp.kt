@@ -119,7 +119,7 @@ class PluviaApp : SplitCompatApplication() {
             Timber.d("Supabase client initialized with URL: ${BuildConfig.SUPABASE_URL}")
         } catch (e: Exception) {
             Timber.e(e, "Failed to initialize Supabase client: ${e.message}")
-            e.printStackTrace()
+            // supabase stays null; app continues without feedback/supporters
         }
     }
 
@@ -138,17 +138,17 @@ class PluviaApp : SplitCompatApplication() {
         @JvmField
         var isOverlayPaused: Boolean = false
 
-        // Supabase client for game feedback
-        lateinit var supabase: SupabaseClient
+        // Supabase client for game feedback (null when URL/key unset — app still runs without it)
+        var supabase: SupabaseClient? = null
             private set
 
-        // Initialize Supabase client
+        // Initialize Supabase client; no-op when URL/key unset so app does not crash
         @OptIn(SupabaseInternal::class)
         fun initSupabase() {
             Timber.d("Initializing Supabase client with URL: ${BuildConfig.SUPABASE_URL}")
             if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_URL == "unset" || BuildConfig.SUPABASE_KEY.isBlank() || BuildConfig.SUPABASE_KEY == "unset") {
-                Timber.e("Invalid Supabase URL or key - URL: ${BuildConfig.SUPABASE_URL}, key empty: ${BuildConfig.SUPABASE_KEY.isBlank()}")
-                throw IllegalStateException("Supabase URL or key is empty")
+                Timber.w("Supabase URL or key unset — feedback/supporters features disabled")
+                return
             }
 
             supabase = createSupabaseClient(

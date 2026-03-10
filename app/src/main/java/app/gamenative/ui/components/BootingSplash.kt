@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.material3.TextButton
 import app.gamenative.ui.theme.PluviaTheme
 import kotlinx.coroutines.delay
 import kotlin.random.Random
@@ -77,11 +78,20 @@ fun BootingSplash(
 
     // Start at a random tip, then rotate while visible
     var tipIndex by remember { mutableStateOf(if (tips.isNotEmpty()) Random.nextInt(tips.size) else 0) }
+    var showDismiss by remember { mutableStateOf(false) }
 
     LaunchedEffect(visible, tips) {
         while (visible && tips.isNotEmpty()) {
             delay(10000)
             tipIndex = (tipIndex + 1) % tips.size
+        }
+    }
+    LaunchedEffect(visible) {
+        if (visible) {
+            delay(15_000)
+            showDismiss = true
+        } else {
+            showDismiss = false
         }
     }
 
@@ -137,6 +147,15 @@ fun BootingSplash(
                 )
 
 
+                if (showDismiss) {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    TextButton(onClick = onBootCompleted) {
+                        Text(
+                            text = "Continue without waiting",
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
                 if (tips.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(24.dp))
                     Box(

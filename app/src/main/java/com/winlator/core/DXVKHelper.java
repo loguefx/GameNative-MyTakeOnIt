@@ -60,19 +60,24 @@ public class DXVKHelper {
             content = content + "d3d11.constantBufferRangeCheck = \"True\"\n";
         }
 
-        String async = config.get("async");
-        if (!async.isEmpty() && !async.equals("0"))
-            envVars.put("DXVK_ASYNC", "1");
-        else if (async.isEmpty() || async.equals("0"))
-            envVars.put("DXVK_ASYNC", "1"); // Default on for GameNative: avoids render-thread stutter
+        // DXVK_ASYNC: always enable regardless of the container's stored async= value.
+        // Synchronous shader compilation blocks the render thread and causes the main-menu freeze.
+        envVars.put("DXVK_ASYNC", "1");
 
-        String asyncCache = config.get("asyncCache");
-        if (!asyncCache.isEmpty() && !asyncCache.equals("0"))
-            envVars.put("DXVK_GPLASYNCCACHE", "1");
+        // DXVK_GPLASYNCCACHE: always enable the GPU-side pipeline async cache.
+        // Without this, DXVK rebuilds the pipeline cache from scratch every session.
+        // Previously this was conditional on asyncCache != "0", which meant it was disabled
+        // for any container created with the default config (asyncCache=0).
+        envVars.put("DXVK_GPLASYNCCACHE", "1");
+
         content = content + '\"';
 
-
         envVars.put("DXVK_CONFIG_FILE", rootDir + ImageFs.CONFIG_PATH+"/dxvk.conf");
+        // Keep DXVK_CONFIG as a quoted-empty string — this is the safe baseline value that
+        // Winlator's D8VK/DXVK builds expect. LaunchOrchestrator.applyGameConfig overrides
+        // DXVK_CONFIG_FILE with the per-game dxvk.conf path (which contains enableAsync=True).
+        // Do NOT inject a multi-line inline config here: D8VK (used in "Wrapper" graphics mode)
+        // does not recognise all standard DXVK config keys and will abort on unknown entries.
         envVars.put("DXVK_CONFIG", content);
     }
 

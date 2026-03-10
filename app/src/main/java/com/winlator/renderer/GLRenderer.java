@@ -5,6 +5,8 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
+import android.os.SystemClock;
+import android.util.Log;
 
 // import com.winlator.R;
 // import com.winlator.XrActivity;
@@ -53,6 +55,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
     private int surfaceWidth;
     private int surfaceHeight;
     private boolean sceneInitialized = false;
+    private long lastZeroWindowsLogTime = 0;
 
     public GLRenderer(XServerView xServerView, XServer xServer) {
         this.xServerView = xServerView;
@@ -83,13 +86,15 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        /*
+         * The GL context was just (re)created; every previously uploaded texture ID is now
+         * invalid.  Mark them all dirty so updateFromDrawable() re-uploads on the next frame.
+         */
         try (XLock lock = xServer.lock(XServer.Lockable.DRAWABLE_MANAGER)) {
-            // iterate all known drawables; if you don't have a central list,
-            // call this during updateScene() for each window's content.
-            android.util.SparseArray<Drawable> sa = xServer.drawableManager.all(); // adjust type if needed
-            for (int i = 0; i < sa.size(); i++) {
-                Drawable d = sa.valueAt(i);
-                if (d != null) d.getTexture().invalidate(); // sets textureId=0 so next draw re-creates
+            android.util.SparseArray<Drawable> drawables = xServer.drawableManager.all();
+            for (int i = 0; i < drawables.size(); i++) {
+                Drawable d = drawables.valueAt(i);
+                if (d != null) d.getTexture().invalidate();
             }
             rootCursorDrawable.getTexture().invalidate();
         }
@@ -255,6 +260,13 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
     }
 
     private void renderWindows() {
+        if (renderableWindows.isEmpty()) {
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastZeroWindowsLogTime > 2000) {
+                Log.d("GLRenderer", "renderWindows: no mapped windows (black screen until game maps a window)");
+                lastZeroWindowsLogTime = now;
+            }
+        }
         windowMaterial.use();
         GLES20.glUniform2f(windowMaterial.getUniformLocation("viewSize"), xServer.screenInfo.width, xServer.screenInfo.height);
         quadVertices.bind(windowMaterial.programId);

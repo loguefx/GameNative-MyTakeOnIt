@@ -877,17 +877,17 @@ object PrefManager {
             setPref(CUSTOM_GAME_MANUAL_FOLDERS, Json.encodeToString(value))
         }
 
-    // Add new setting for Wine debug logging
+    // Add new setting for Wine debug logging (setter is sync so launch always sees latest value)
     private val ENABLE_WINE_DEBUG = booleanPreferencesKey("enable_wine_debug")
     var enableWineDebug: Boolean
         get() = getPref(ENABLE_WINE_DEBUG, false)
-        set(value) = setPref(ENABLE_WINE_DEBUG, value)
+        set(value) = runBlocking(Dispatchers.IO) { dataStore.edit { it[ENABLE_WINE_DEBUG] = value } }
 
-    // Add new setting for wine debug channels
+    // Add new setting for wine debug channels (setter is sync so launch always sees latest value)
     private val WINE_DEBUG_CHANNELS = stringPreferencesKey("wine_debug_channels")
     var wineDebugChannels: String
         get() = getPref(WINE_DEBUG_CHANNELS, Constants.XServer.DEFAULT_WINE_DEBUG_CHANNELS)
-        set(value) = setPref(WINE_DEBUG_CHANNELS, value)
+        set(value) = runBlocking(Dispatchers.IO) { dataStore.edit { it[WINE_DEBUG_CHANNELS] = value } }
 
     // App and notification icon variants
     private val USE_ALT_LAUNCHER_ICON = booleanPreferencesKey("use_alt_launcher_icon")
@@ -930,4 +930,29 @@ object PrefManager {
     var hardwareProfileJson: String
         get() = getPref(HARDWARE_PROFILE_JSON, "")
         set(value) = setPref(HARDWARE_PROFILE_JSON, value)
+
+    // Per-game set of appIds whose shader overlay has been shown at least once.
+    // Stored as a JSON-encoded Set<String> so the overlay message "This only happens once" is
+    // actually honoured — the overlay is suppressed on every launch after the first.
+    private val SHADER_OVERLAY_SHOWN_GAMES = stringPreferencesKey("shader_overlay_shown_games")
+    private var shaderOverlayShownGames: Set<String>
+        get() {
+            val raw = getPref(SHADER_OVERLAY_SHOWN_GAMES, "[]")
+            return try { Json.decodeFromString(raw) } catch (_: Exception) { emptySet() }
+        }
+        set(value) = setPref(SHADER_OVERLAY_SHOWN_GAMES, Json.encodeToString(value))
+
+    fun hasShownShaderOverlay(appId: String): Boolean = shaderOverlayShownGames.contains(appId)
+
+    fun markShaderOverlayShown(appId: String) {
+        // MUST be a synchronous write — scope.launch can fail to commit on crash/process-kill,
+        // causing the "This only happens once" overlay to reappear on every subsequent launch.
+        // runBlocking + dataStore.edit guarantees the flag is persisted before we return.
+        val updated = shaderOverlayShownGames + appId
+        runBlocking(Dispatchers.IO) {
+            dataStore.edit { pref ->
+                pref[SHADER_OVERLAY_SHOWN_GAMES] = Json.encodeToString(updated)
+            }
+        }
+    }
 }

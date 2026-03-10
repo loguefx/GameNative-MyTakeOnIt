@@ -15,8 +15,15 @@ import android.view.WindowInsets
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.filled.*
@@ -43,8 +50,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
@@ -241,6 +252,8 @@ fun XServerScreen(
     onGameLaunchError: ((String) -> Unit)? = null,
 ) {
     Timber.i("Starting up XServerScreen")
+    // Reset per-session exit guard so PostHog game_exited fires for every new game launch.
+    isExiting.set(false)
     val context = LocalContext.current
     val view = LocalView.current
     // Task 7 — Unbuffered input dispatch for lower touch/gamepad latency
@@ -275,9 +288,32 @@ fun XServerScreen(
     var taskAffinityMask = 0
     var taskAffinityMaskWoW64 = 0
 
-    val container = remember(appId) {
-        ContainerUtils.getContainer(context, appId)
+    // Avoid crash if container was never created (e.g. race, corrupt state): show error and go back
+    val containerResult = remember(appId) {
+        runCatching { ContainerUtils.getContainer(context, appId) }
     }
+    if (containerResult.isFailure) {
+        LaunchedEffect(Unit) {
+            val msg = containerResult.exceptionOrNull()?.message ?: "Game failed to start"
+            Timber.tag("GameLaunch").e("XServerScreen: container missing for appId=$appId: $msg")
+            onGameLaunchError?.invoke(msg)
+            // PluviaMain callback will show error dialog and pop back
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(ComposeColor.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                stringResource(R.string.launch_failed_title),
+                color = ComposeColor.White,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+        return
+    }
+    val container = containerResult.getOrThrow()
 
     val xServerState = rememberSaveable(stateSaver = XServerState.Saver) {
         mutableStateOf(
@@ -349,6 +385,20 @@ fun XServerScreen(
     var showPhysicalControllerDialog by remember { mutableStateOf(false) }
     var isOverlayPaused by remember { mutableStateOf(false) }
     var keyboardRequestedFromOverlay by remember { mutableStateOf(false) }
+
+    // Achievement unlock notification: auto-dismisses after 5 seconds.
+    var achievementNotification by remember { mutableStateOf<SteamEvent.AchievementUnlocked?>(null) }
+    LaunchedEffect(Unit) {
+        PluviaApp.events.on<SteamEvent.AchievementUnlocked, Unit> { event ->
+            achievementNotification = event
+        }
+    }
+    LaunchedEffect(achievementNotification) {
+        if (achievementNotification != null) {
+            kotlinx.coroutines.delay(5000L)
+            achievementNotification = null
+        }
+    }
 
     fun startExitWatchForUnmappedGameWindow(window: Window) {
         val winHandler = xServerView?.getxServer()?.winHandler ?: return
@@ -626,9 +676,14 @@ fun XServerScreen(
     }
 
     DisposableEffect(container) {
+        // keepAlive = true makes MainActivity.dispatchKeyEvent route KEYCODE_BACK through
+        // the BackPressed event bus so gameBack (NavigationDialog) intercepts it instead of
+        // Android's default stack-pop which would immediately leave the game.
+        SteamService.keepAlive = true
         registerBackAction(gameBack)
         onDispose {
             Timber.d("XServerScreen leaving, clearing back action")
+            SteamService.keepAlive = false
             imeInputReceiver?.hideKeyboard()
             imeInputReceiver = null
             registerBackAction { }
@@ -1203,10 +1258,14 @@ fun XServerScreen(
                 PluviaApp.touchpadView?.setTouchscreenMouseDisabled(true);
             }
 
-            // Shader compilation overlay: only on first launch when DXVK state cache is empty (avoids 90s block on warm launches)
-            val cacheDir = GamePaths.getDxvkCacheDir(context, appId)
-            val hasPopulatedCache = cacheDir.exists() && cacheDir.listFiles()?.any { it.isFile && it.length() > 0 } == true
-            if (!hasPopulatedCache) {
+            // Shader compilation overlay: only on the very first launch per game.
+            // The DXVK state cache check was unreliable because DXVK only flushes the cache
+            // on a clean exit — if the game crashed or was force-killed, the cache file was
+            // never written and the overlay would reappear on every subsequent launch despite
+            // the string "This only happens once". Instead we persist a per-game flag in
+            // PrefManager immediately when we first show the overlay.
+            if (!app.gamenative.PrefManager.hasShownShaderOverlay(appId)) {
+                app.gamenative.PrefManager.markShaderOverlayShown(appId)
                 val shaderOverlay = android.view.LayoutInflater.from(context).inflate(R.layout.shader_progress_overlay, frameLayout, false)
                 frameLayout.addView(shaderOverlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
                 shaderOverlay.postDelayed({
@@ -1231,6 +1290,17 @@ fun XServerScreen(
             gameRoot = null
         },
     )
+
+        // Achievement unlock notification: slides in from the top-right, auto-dismisses after 5 s.
+        achievementNotification?.let { ach ->
+            AchievementUnlockedToast(
+                notification = ach,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 12.dp, end = 12.dp)
+                    .zIndex(998f),
+            )
+        }
 
         // Floating toolbar for edit mode (always visible in edit mode)
         if (isEditMode && areControlsVisible) {
@@ -1548,6 +1618,61 @@ private fun EditModeToolbar(
     }
 }
 
+/**
+ * Transient achievement unlock pop-up shown in the top-right corner of XServerScreen.
+ * Does NOT pause the game. Auto-dismissed by the caller after 5 seconds.
+ */
+@Composable
+private fun AchievementUnlockedToast(
+    notification: SteamEvent.AchievementUnlocked,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = true,
+        enter = slideInHorizontally { it } + fadeIn(),
+        exit = slideOutHorizontally { it } + fadeOut(),
+        modifier = modifier,
+    ) {
+        androidx.compose.material3.Card(
+            shape = RoundedCornerShape(10.dp),
+            colors = androidx.compose.material3.CardDefaults.cardColors(
+                containerColor = app.gamenative.ui.theme.gnBgSurface,
+            ),
+            border = BorderStroke(1.dp, app.gamenative.ui.theme.gnBorderCard),
+            modifier = Modifier.widthIn(max = 260.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                com.skydoves.landscapist.coil.CoilImage(
+                    imageModel = { notification.iconUrl },
+                    imageOptions = com.skydoves.landscapist.ImageOptions(contentScale = ContentScale.Crop),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(6.dp)),
+                )
+                Column {
+                    Text(
+                        text = "Achievement Unlocked",
+                        style = app.gamenative.ui.theme.PluviaTypography.labelSmall,
+                        color = app.gamenative.ui.theme.gnAccentGlow,
+                    )
+                    Text(
+                        text = notification.displayName,
+                        style = app.gamenative.ui.theme.PluviaTypography.titleSmall.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        ),
+                        color = app.gamenative.ui.theme.gnTextPrimary,
+                        maxLines = 2,
+                    )
+                }
+            }
+        }
+    }
+}
+
 private fun showInputControls(profile: ControlsProfile, winHandler: WinHandler, container: Container) {
     profile.setVirtualGamepad(true)
 
@@ -1737,7 +1862,8 @@ private fun shiftXEnvironmentToContext(
     // sysVSharedMemoryComponent.connectToXServer(xServer)
     environment.addComponent(sysVSharedMemoryComponent)
     xEnvironment.getComponent<XServerComponent>(XServerComponent::class.java).stop()
-    val xServerComponent = XServerComponent(xServer, UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.XSERVER_PATH))
+    // useAbstractNamespace=true: also binds \0/tmp/.X11-unix/X0 so winex11.drv connects
+    val xServerComponent = XServerComponent(xServer, UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.XSERVER_PATH, true))
     // val xServerComponent = xEnvironment.getComponent<XServerComponent>(XServerComponent::class.java)
     // xServerComponent.connectToXServer(xServer)
     environment.addComponent(xServerComponent)
@@ -1838,15 +1964,14 @@ private fun setupXEnvironment(
     // read user preferences
     val enableWineDebug = PrefManager.enableWineDebug
     val enableBox86Logs = WinlatorPrefManager.getBoolean("enable_box86_64_logs", false)
-    val wineDebugChannels = PrefManager.wineDebugChannels
-    // explicitly enable or disable Wine debug channels
-    envVars.put(
-        "WINEDEBUG",
-        if (enableWineDebug && wineDebugChannels.isNotEmpty())
-            "+" + wineDebugChannels.replace(",", ",+")
-        else
-            "-all",
-    )
+    val wineDebugChannels = PrefManager.wineDebugChannels.trim()
+    val winedebugValue = when {
+        !enableWineDebug -> "-all"
+        wineDebugChannels.isEmpty() -> "+all"
+        else -> "+" + wineDebugChannels.replace(",", ",+").replace(" ", "")
+    }
+    envVars.put("WINEDEBUG", winedebugValue)
+    Timber.tag("GameLaunch").d("WINEDEBUG=%s (enableWineDebug=%s, channels=%s)", winedebugValue, enableWineDebug, if (wineDebugChannels.isEmpty()) "default +all" else wineDebugChannels)
     // capture debug output to file if either Wine or Box86/64 logging is enabled
     var logFile: File? = null
     val captureLogs = enableWineDebug || enableBox86Logs
@@ -1897,9 +2022,20 @@ private fun setupXEnvironment(
         val wow64Mode = container.isWoW64Mode
         guestProgramLauncherComponent.setContainer(container);
         guestProgramLauncherComponent.setWineInfo(xServerState.value.wineInfo);
+        val diagGameId = ContainerUtils.extractGameIdFromContainerId(appId)
+        val diagGameFix = app.gamenative.config.KnownGameFixes.get(diagGameId)
+        val wineStartCmd = getWineStartCommand(context, appId, container, bootToContainer, testGraphics, appLaunchInfo, envVars, guestProgramLauncherComponent, gameSource)
         val guestExecutable = "wine explorer /desktop=shell," + xServer.screenInfo + " " +
-            getWineStartCommand(context, appId, container, bootToContainer, testGraphics, appLaunchInfo, envVars, guestProgramLauncherComponent, gameSource) +
+            wineStartCmd +
             (if (container.execArgs.isNotEmpty()) " " + container.execArgs else "")
+        // TAG: GameLaunch — grep this in logcat to verify the exact Wine command
+        Timber.tag("GameLaunch").i("=== LAUNCH DIAGNOSTIC ===")
+        Timber.tag("GameLaunch").i("appId=$appId  useLegacyDrm=${diagGameFix?.forceUseLegacyDrm == true || container.isUseLegacyDRM}  appLaunchInfo=${appLaunchInfo != null}")
+        Timber.tag("GameLaunch").i("container.executablePath=[${container.executablePath}]")
+        Timber.tag("GameLaunch").i("gameFix.gameExePath=[${diagGameFix?.gameExePath}]")
+        Timber.tag("GameLaunch").i("wineStartCmd=[$wineStartCmd]")
+        Timber.tag("GameLaunch").i("guestExecutable=[$guestExecutable]")
+        Timber.tag("GameLaunch").i("=========================")
         guestProgramLauncherComponent.isWoW64Mode = wow64Mode
         guestProgramLauncherComponent.guestExecutable = guestExecutable
         // Set steam type for selecting appropriate box64rc
@@ -1966,7 +2102,8 @@ private fun setupXEnvironment(
             UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.SYSVSHM_SERVER_PATH),
         ),
     )
-    environment.addComponent(XServerComponent(xServer, UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.XSERVER_PATH)))
+    // useAbstractNamespace=true: also binds \0/tmp/.X11-unix/X0 so winex11.drv connects
+    environment.addComponent(XServerComponent(xServer, UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.XSERVER_PATH, true)))
     environment.addComponent(NetworkInfoUpdateComponent())
 
     if (!container.isLaunchRealSteam) {
@@ -2033,11 +2170,13 @@ private fun setupXEnvironment(
         }
         app.gamenative.launch.LaunchOrchestrator.applyGameConfig(context, appId, config, envVars)
     }
+    // Ensure Settings > Debug WINEDEBUG is final (overrides container/game config)
+    envVars.put("WINEDEBUG", winedebugValue)
     guestProgramLauncherComponent.envVars = envVars
     guestProgramLauncherComponent.setTerminationCallback { status ->
         if (status != 0) {
             Timber.tag("GameLaunch").e("Guest program terminated with exit status: $status (game/Wine process crashed or was killed)")
-            onGameLaunchError?.invoke("Game terminated with error status: $status")
+            onGameLaunchError?.invoke("Game terminated with error status: $status. Filter logcat by 'GameLaunch' for Wine/game output.")
             navigateBack()
         }
         PluviaApp.events.emit(AndroidEvent.GuestProgramTerminated)
@@ -2128,15 +2267,25 @@ private fun getWineStartCommand(
     val isSteamGame = gameSource == GameSource.STEAM
     val gameId = ContainerUtils.extractGameIdFromContainerId(appId)
 
+    // Resolve fix and legacy-DRM flag at function scope so both the setup block
+    // (ColdClientLoader.ini write) and the launch-target block can reference them.
+    val gameFix = if (isSteamGame) app.gamenative.config.KnownGameFixes.get(gameId) else null
+    val useLegacyDrm = isSteamGame && (container.isUseLegacyDRM || (gameFix?.forceUseLegacyDrm == true))
+
     if (isSteamGame) {
         // Steam-specific setup
         if (container.executablePath.isEmpty()){
             container.executablePath = SteamService.getInstalledExe(gameId)
             container.saveData()
         }
-        if (!container.isUseLegacyDRM){
-            // Create ColdClientLoader.ini file
-            SteamUtils.writeColdClientIni(gameId, container)
+        if (!useLegacyDrm){
+            // applyGameConfig writes GN_WINE_LAUNCH_ARGS into envVars but runs AFTER this call site.
+            // Read KnownGameFixes directly here so ColdClientLoader.ini always gets the correct
+            // ExeCommandLine (e.g. -nosplash -nointro for BioShock 2) regardless of init order.
+            val iniArgs = gameFix?.launchArgs
+                ?.takeIf { it.isNotEmpty() }
+                ?: envVars.get("GN_WINE_LAUNCH_ARGS")
+            SteamUtils.writeColdClientIni(gameId, container, iniArgs)
         }
         val controllerVdfText = SteamService.resolveSteamControllerVdfText(gameId)
         if (controllerVdfText.isNullOrEmpty()) {
@@ -2293,13 +2442,17 @@ private fun getWineStartCommand(
         val normalizedPath = executablePath.replace('/', '\\')
         envVars.put("WINEPATH", "A:\\")
         "\"A:\\${normalizedPath}\""
-    } else if (appLaunchInfo == null) {
-        // For Steam games, we need appLaunchInfo
+    } else if (appLaunchInfo == null && !useLegacyDrm) {
+        // ColdClientLoader path requires appLaunchInfo to resolve the Steam install layout.
+        // Legacy-DRM and forceUseLegacyDrm games derive their paths from getAppDirPath and
+        // container.executablePath, so they can launch without appLaunchInfo — fall through.
         Timber.tag("XServerScreen").w("appLaunchInfo is null for Steam game: $appId")
         "\"wfm.exe\""
     } else {
         if (container.isLaunchRealSteam) {
-            // Launch Steam with the applaunch parameter to start the game
+            // Launch Steam with the applaunch parameter to start the game.
+            // Double quotes so splitCommand() correctly handles the space in "Program Files" as one token.
+            // (splitCommand resets quoteChar to '"' every iteration; single quotes therefore never close.)
             "\"C:\\\\Program Files (x86)\\\\Steam\\\\steam.exe\" -silent -vgui -tcp " +
                     "-nobigpicture -nofriendsui -nochatui -nointro -applaunch $gameId"
         } else {
@@ -2308,10 +2461,18 @@ private fun getWineStartCommand(
                 executablePath = container.executablePath
             } else {
                 executablePath = SteamService.getInstalledExe(gameId)
-                container.executablePath = executablePath
-                container.saveData()
+                // If auto-detection failed (appinfo not loaded yet), fall back to the hardcoded
+                // path from KnownGameFixes so forceUseLegacyDrm games always launch correctly.
+                if (executablePath.isEmpty() && gameFix?.gameExePath?.isNotEmpty() == true) {
+                    Timber.tag("XServerScreen").w("getInstalledExe returned empty for $gameId; using KnownGameFixes.gameExePath=${gameFix.gameExePath}")
+                    executablePath = gameFix.gameExePath
+                }
+                if (executablePath.isNotEmpty()) {
+                    container.executablePath = executablePath
+                    container.saveData()
+                }
             }
-            if (container.isUseLegacyDRM) {
+            if (useLegacyDrm) {
                 val appDirPath = SteamService.getAppDirPath(gameId)
                 val executableDir = appDirPath + "/" + executablePath.substringBeforeLast("/", "")
                 guestProgramLauncherComponent.workingDir = File(executableDir);
@@ -2327,9 +2488,27 @@ private fun getWineStartCommand(
                     Timber.e("Could not locate game drive")
                     'D'
                 }
-                envVars.put("WINEPATH", "$drive:/${appLaunchInfo.workingDir}")
-                "\"$drive:/${executablePath}\""
+                // Append known launch args directly to the exe command line for games that
+                // bypass ColdClientLoader (forceUseLegacyDrm), since there is no .ini to carry them.
+                val directArgs = if (gameFix?.forceUseLegacyDrm == true && gameFix.launchArgs.isNotEmpty()) {
+                    " ${gameFix.launchArgs}"
+                } else { "" }
+                // Use appLaunchInfo.workingDir when available; fall back to the exe's own directory for
+                // forceUseLegacyDrm games where appLaunchInfo may be null.
+                val winePath = if (appLaunchInfo != null) {
+                    "$drive:/${appLaunchInfo.workingDir}"
+                } else {
+                    "$drive:/${executablePath.substringBeforeLast("/", "")}"
+                }
+                envVars.put("WINEPATH", winePath)
+                // Double quotes so splitCommand() correctly handles the path as one token.
+                // splitCommand resets quoteChar to '"' every iteration, so single-quoted strings never
+                // close — the entire quoted payload (including the exe path and launch args) would be
+                // silently dropped and winhandler.exe would receive no game path.
+                "\"$drive:/${executablePath.replace("\"", "\\\"")}\""  + directArgs
             } else {
+                // Double quotes so splitCommand() correctly closes the quoted path token.
+                // (Single quotes never close in splitCommand because it resets quoteChar to '"' every iteration.)
                 "\"C:\\\\Program Files (x86)\\\\Steam\\\\steamclient_loader_x64.exe\""
             }
         }
@@ -2624,6 +2803,9 @@ private fun unpackExecutableFile(
     try {
         val rootDir: File = imageFs.getRootDir()
 
+        // When useLegacyDRM is true we never extract experimental-drm (replaceSteamclientDll not called),
+        // so generate_interfaces_file.exe and Steamless are not present. Skip DRM steps and just clear unpacking.
+        if (!container.isUseLegacyDRM) {
         try {
             PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Handling DRM..."))
             // a:/.../GameDir/orig_dll_path.txt  (same dir as the EXE inside A:)
@@ -2689,6 +2871,10 @@ private fun unpackExecutableFile(
             if (exePaths.isEmpty()) {
                 Timber.w("No executable path set, skipping Steamless")
             } else {
+                val steamlessExe = File(rootDir, "Steamless/Steamless.CLI.exe")
+                if (!steamlessExe.exists()) {
+                    Timber.w("Steamless.CLI.exe not found at ${steamlessExe.absolutePath}; skipping DRM unpack. Ensure experimental-drm is downloaded.")
+                } else {
                 PluviaApp.events.emit(AndroidEvent.SetBootingSplashText("Handling DRM..."))
                 for ((index, executablePath) in exePaths.withIndex()) {
                     if (exePaths.size > 1) {
@@ -2746,10 +2932,12 @@ private fun unpackExecutableFile(
                         Timber.e(e, "Error moving files for $executablePath")
                     }
                 }
+                } // end Steamless.CLI.exe exists
             }
         } else {
             Timber.i("Skipping Steamless (launchRealSteam=${container.isLaunchRealSteam}, useLegacyDRM=${container.isUseLegacyDRM}, unpackFiles=${container.isUnpackFiles})")
         }
+        } // end !container.isUseLegacyDRM
 
         output = StringBuilder()
         try {
@@ -2759,12 +2947,16 @@ private fun unpackExecutableFile(
         } catch (e: Exception) {
             Timber.e("Error running wineserver: $e")
         }
-        container.setNeedsUnpacking(false)
-        Timber.d("Setting needs unpacking to false")
-        container.saveData()
-    } catch (e: Exception) {
-        Timber.e("Error during unpacking: $e")
-        onError?.invoke("Error during unpacking: ${e.message}")
+        try {
+            container.setNeedsUnpacking(false)
+            Timber.d("Setting needs unpacking to false")
+            container.saveData()
+        } catch (saveEx: Exception) {
+            Timber.e(saveEx, "Failed to save container after unpacking; game may still launch")
+        }
+    } catch (e: Throwable) {
+        Timber.e(e, "Error during unpacking / Handling DRM")
+        onError?.invoke("Error during unpacking (Handling DRM): ${e.message ?: e.javaClass.simpleName}")
     } finally {
         // no-op
     }

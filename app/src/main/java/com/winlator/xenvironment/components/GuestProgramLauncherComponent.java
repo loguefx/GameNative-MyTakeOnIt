@@ -191,6 +191,19 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         if (!wow64Mode) addBox86EnvVars(envVars, enableBox86_64Logs);
         addBox64EnvVars(envVars, enableBox86_64Logs);
         if (this.envVars != null) envVars.putAll(this.envVars);
+        // Ensure Settings > Debug WINEDEBUG always wins (overrides container or any other source)
+        app.gamenative.PrefManager.INSTANCE.init(context);
+        boolean enableWineDebug = app.gamenative.PrefManager.INSTANCE.getEnableWineDebug();
+        String wineDebugChannels = app.gamenative.PrefManager.INSTANCE.getWineDebugChannels().trim();
+        String winedebugValue;
+        if (!enableWineDebug) {
+            winedebugValue = "-all";
+        } else if (wineDebugChannels.isEmpty()) {
+            winedebugValue = "+all";
+        } else {
+            winedebugValue = "+" + wineDebugChannels.replace(",", ",+").replace(" ", "");
+        }
+        envVars.put("WINEDEBUG", winedebugValue);
 
         // 5D/5E: sysctl and ulimit inside container (same shell as Wine). Wrapped in sh -c so they run inside proot.
         // Task 2: page-cluster and sched_migration_cost_ns for ZRAM and cache-warm game threads.
@@ -305,7 +318,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
                 pid = -1;
             }
             if (terminationCallback != null) terminationCallback.call(status);
-        });
+        }, "GameLaunch");
     }
 
     private void extractBox86_64Files() {

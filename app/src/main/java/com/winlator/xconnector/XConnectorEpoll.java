@@ -27,11 +27,17 @@ public class XConnectorEpoll implements Runnable {
 
     private native int createAFUnixSocket(String str);
 
+    /**
+     * Bind a Linux abstract-namespace Unix socket with the given name (no leading
+     * null byte — the C implementation inserts it).  Returns the fd, or -1 on error.
+     */
+    private native int createAbstractAFUnixSocket(String name);
+
     private native int createEpollFd();
 
     private native int createEventFd();
 
-    private native boolean doEpollIndefinitely(int i, int i2, boolean z);
+    private native boolean doEpollIndefinitely(int i, int i2, boolean z, int abstractFd);
 
     private native void removeFdFromEpoll(int i, int i2);
 
@@ -40,6 +46,9 @@ public class XConnectorEpoll implements Runnable {
     static {
         System.loadLibrary("winlator");
     }
+
+    /** Fd of the abstract-namespace socket (-1 when unused). */
+    private int abstractServerFd = -1;
 
     public XConnectorEpoll(UnixSocketConfig socketConfig, ConnectionHandler connectionHandler, RequestHandler requestHandler) {
         this.connectionHandler = connectionHandler;
@@ -60,10 +69,39 @@ public class XConnectorEpoll implements Runnable {
             closeFd(createEpollFd);
             throw new RuntimeException("Failed to add server fd to epoll.");
         }
+
+        // Bind an additional abstract-namespace socket when requested (X server only).
+        // Wine's Xlib/XCB probes the abstract socket FIRST; binding it here makes
+        // winex11.drv connect without a real /tmp on the Android host filesystem.
+        // Wrapped in try-catch so a stale libwinlator.so (missing the symbol) does not
+        // crash the constructor — the XServer falls back to the filesystem socket path.
+        if (socketConfig.abstractSocketName != null) {
+            try {
+                int afd = createAbstractAFUnixSocket(socketConfig.abstractSocketName);
+                if (afd >= 0) {
+                    if (addFdToEpoll(createEpollFd, afd)) {
+                        abstractServerFd = afd;
+                        Log.d("XConnectorEpoll", "Abstract socket bound: \\0" + socketConfig.abstractSocketName);
+                    } else {
+                        Log.w("XConnectorEpoll", "Failed to add abstract socket to epoll — abstract connections won't work");
+                        closeFd(afd);
+                    }
+                } else {
+                    Log.w("XConnectorEpoll", "Failed to create abstract socket for " + socketConfig.abstractSocketName);
+                }
+            } catch (UnsatisfiedLinkError e) {
+                // Native symbol not present in the loaded libwinlator.so (stale build).
+                // The XServer will still listen on the filesystem socket; Wine's Xlib
+                // will fall back to that path automatically.
+                Log.w("XConnectorEpoll", "createAbstractAFUnixSocket not in native library — abstract socket disabled. Rebuild the app to fix.");
+            }
+        }
+
         int createEventFd = createEventFd();
         this.shutdownFd = createEventFd;
         if (!addFdToEpoll(createEpollFd, createEventFd)) {
             closeFd(createAFUnixSocket);
+            if (abstractServerFd >= 0) closeFd(abstractServerFd);
             closeFd(createEventFd);
             closeFd(createEpollFd);
             throw new RuntimeException("Failed to add shutdown fd to epoll.");
@@ -96,7 +134,7 @@ public class XConnectorEpoll implements Runnable {
     @Override // java.lang.Runnable
     public void run() {
         while (this.running) {
-            if (!doEpollIndefinitely(this.epollFd, this.serverFd, !this.multithreadedClients && this.monitorClients)) {
+            if (!doEpollIndefinitely(this.epollFd, this.serverFd, !this.multithreadedClients && this.monitorClients, this.abstractServerFd)) {
                 break;
             }
         }
@@ -181,6 +219,11 @@ public class XConnectorEpoll implements Runnable {
             killConnection(client);
         }
         removeFdFromEpoll(this.epollFd, this.serverFd);
+        if (abstractServerFd >= 0) {
+            removeFdFromEpoll(this.epollFd, abstractServerFd);
+            closeFd(abstractServerFd);
+            abstractServerFd = -1;
+        }
         removeFdFromEpoll(this.epollFd, this.shutdownFd);
         closeFd(this.serverFd);
         closeFd(this.shutdownFd);

@@ -26,58 +26,50 @@ enum class PathType {
     /**
      * Turns a path type to a full path through the android system to the expected directory in
      * the wine prefix or the steam common app dir. Make sure to run
-     * [com.winlator.container.ContainerManager.activateContainer] on the proper
+     * [com.winlator.container.ContainerManager.activateContainer] on the appropriate
      * [com.winlator.container.Container] beforehand.
+     *
+     * Each Steam game runs in its own isolated container whose Wine prefix is at:
+     *   `imagefs/home/xuser-STEAM_{appId}/.wine/`
+     * NOT at the global `imagefs/home/xuser/.wine/` (ImageFs.WINEPREFIX).
+     * Using the wrong prefix means cloud sync reads/writes a directory the game never
+     * touches — so downloaded saves are never found and the game shows no saved progress.
      */
     fun toAbsPath(context: Context, appId: Int, accountId: Long): String {
+        val rootDir = ImageFs.find(context).rootDir.absolutePath
+        // Per-game Wine prefix: each container is named xuser-STEAM_{appId} and its
+        // .wine directory mirrors the Windows drive layout the game actually writes to.
+        val winePrefix = if (appId > 0) "home/xuser-STEAM_$appId/.wine" else ImageFs.WINEPREFIX
+
         val path = when (this) {
             GameInstall -> SteamService.getAppDirPath(appId)
             SteamUserData -> Paths.get(
-                ImageFs.find(context).rootDir.absolutePath,
-                ImageFs.WINEPREFIX,
-                "/drive_c/Program Files (x86)/Steam/userdata/$accountId/$appId/remote",
+                rootDir, winePrefix,
+                "drive_c/Program Files (x86)/Steam/userdata/$accountId/$appId/remote",
             ).toString()
             WinMyDocuments -> Paths.get(
-                ImageFs.find(context).rootDir.absolutePath,
-                ImageFs.WINEPREFIX,
-                "/drive_c/users/",
-                ImageFs.USER,
-                "Documents/",
+                rootDir, winePrefix,
+                "drive_c/users/", ImageFs.USER, "Documents/",
             ).toString()
             WinAppDataLocal -> Paths.get(
-                ImageFs.find(context).rootDir.absolutePath,
-                ImageFs.WINEPREFIX,
-                "/drive_c/users/",
-                ImageFs.USER,
-                "AppData/Local/",
+                rootDir, winePrefix,
+                "drive_c/users/", ImageFs.USER, "AppData/Local/",
             ).toString()
             WinAppDataLocalLow -> Paths.get(
-                ImageFs.find(context).rootDir.absolutePath,
-                ImageFs.WINEPREFIX,
-                "/drive_c/users/",
-                ImageFs.USER,
-                "AppData/LocalLow/",
+                rootDir, winePrefix,
+                "drive_c/users/", ImageFs.USER, "AppData/LocalLow/",
             ).toString()
             WinAppDataRoaming -> Paths.get(
-                ImageFs.find(context).rootDir.absolutePath,
-                ImageFs.WINEPREFIX,
-                "/drive_c/users/",
-                ImageFs.USER,
-                "AppData/Roaming/",
+                rootDir, winePrefix,
+                "drive_c/users/", ImageFs.USER, "AppData/Roaming/",
             ).toString()
             WinSavedGames -> Paths.get(
-                ImageFs.find(context).rootDir.absolutePath,
-                ImageFs.WINEPREFIX,
-                "/drive_c/users/",
-                ImageFs.USER,
-                "Saved Games/",
+                rootDir, winePrefix,
+                "drive_c/users/", ImageFs.USER, "Saved Games/",
             ).toString()
             Root -> Paths.get(
-                ImageFs.find(context).rootDir.absolutePath,
-                ImageFs.WINEPREFIX,
-                "/drive_c/users/",
-                ImageFs.USER,
-                "",
+                rootDir, winePrefix,
+                "drive_c/users/", ImageFs.USER, "",
             ).toString()
             else -> {
                 Timber.e("Did not recognize or unsupported path type $this")

@@ -2,13 +2,17 @@ package app.gamenative.ui.model
 
 import android.content.Context
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import app.gamenative.data.GameInvite
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
@@ -23,12 +27,33 @@ class InviteViewModel @Inject constructor(
     private val _pendingConnectAppId = MutableStateFlow<Int?>(null)
     private val _pendingConnectString = MutableStateFlow<String?>(null)
 
+    /** Auto-dismiss jobs keyed by invite ID — cancelled if the user acts before the timer fires. */
+    private val dismissJobs = HashMap<String, Job>()
+
+    companion object {
+        private const val INVITE_AUTO_DISMISS_MS = 20_000L
+    }
+
     fun onInviteReceived(invite: GameInvite) {
         _pendingInvites.update { current -> current + invite }
+        // Cancel any existing timer for this ID (safety for duplicate events) then start a fresh one.
+        dismissJobs[invite.id]?.cancel()
+        dismissJobs[invite.id] = viewModelScope.launch {
+            delay(INVITE_AUTO_DISMISS_MS)
+            dismissInvite(invite.id)
+        }
     }
 
     fun dismissInvite(inviteId: String) {
+        dismissJobs.remove(inviteId)?.cancel()
         _pendingInvites.update { current -> current.filter { it.id != inviteId } }
+    }
+
+    /** Clear all pending invites — call on user logout so stale notifications don't linger. */
+    fun clearAll() {
+        dismissJobs.values.forEach { it.cancel() }
+        dismissJobs.clear()
+        _pendingInvites.value = emptyList()
     }
 
     /**

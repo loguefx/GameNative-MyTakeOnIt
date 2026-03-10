@@ -1,0 +1,244 @@
+---
+description: Game launch pipeline, X server socket, Steam invites, achievement notifications, in-game side panel, and home screen notification bar rules for GameNative.
+globs:
+  - app/src/main/cpp/winlator/xconnector_epoll.c
+  - app/src/main/java/com/winlator/xconnector/**
+  - app/src/main/java/com/winlator/xenvironment/**
+  - app/src/main/java/app/gamenative/ui/screen/xserver/**
+  - app/src/main/java/app/gamenative/ui/screen/HomeScreen.kt
+  - app/src/main/java/app/gamenative/ui/model/InviteViewModel.kt
+  - app/src/main/java/app/gamenative/ui/component/GameInviteBanner.kt
+  - app/src/main/java/app/gamenative/events/SteamEvent.kt
+  - app/src/main/java/app/gamenative/service/SteamService.kt
+  - app/src/main/java/com/winlator/contentdialog/NavigationDialog.java
+alwaysApply: false
+---
+
+# GameNative — Game Launch, Invites & Notifications
+
+## 1. Root cause of the "black screen / no game" bug
+
+Wine's `winex11.drv` uses Xlib/XCB to connect to the X server.
+On Linux, XCB **always probes the abstract-namespace socket first**:
+`\0/tmp/.X11-unix/X0`  (sun_path[0] = '\0').
+If that fails it falls back to the filesystem path `/tmp/.X11-unix/X0`.
+
+GameNative's X server used to bind only the filesystem socket at
+`rootDir/tmp/.X11-unix/X0`.  The guest process is NOT chrooted, so
+`/tmp` is the real Android `/tmp`, not `rootDir/tmp`.  Neither path
+Wine tried matched — winex11.drv failed, no window was created.
+
+**The root fix (already implemented):**
+
+`XConnectorEpoll` now ALSO binds the abstract-namespace socket
+`\0/tmp/.X11-unix/X0` when `socketConfig.abstractSocketName != null`.
+
+- `UnixSocketConfig.createSocket(rootPath, XSERVER_PATH, true)` — pass
+  `useAbstractNamespace = true` to enable this for the X server socket only.
+- `xconnector_epoll.c` — `createAbstractAFUnixSocket(name)` creates the
+  abstract fd; `doEpollIndefinitely` reads the `abstractServerFd` field via
+  JNI and calls `accept()` on either server fd when each fires.
+- `abstractServerFd` field on `XConnectorEpoll` must be `package-private`
+  (or at minimum readable via `GetFieldID`) so the JNI helper can read it.
+
+**DO NOTs for the X server socket:**
+- Do NOT try to use `redirect.conf` or `REDIRECT_CONFIG` env vars as a
+  workaround — libredirect does not rewrite `/tmp` based on those vars.
+- Do NOT add a `chroot` or bind-mount — requires root, breaks portability.
+- Do NOT put `XSERVER_PATH` / `.X11-unix` paths anywhere except
+  `UnixSocketConfig.java` and the native JNI layer.
+- Do NOT remove the abstract-namespace socket binding without providing an
+  equivalent fix; it is the only rootless way to make winex11.drv connect.
+
+---
+
+## 2. X server socket setup rules
+
+- Only ONE place creates the X server socket:
+  `XServerScreen.kt` calls `UnixSocketConfig.createSocket(rootPath, XSERVER_PATH, true)`.
+  Both call sites (lines ~1764 and ~1992) must use `useAbstractNamespace = true`.
+- All other sockets (ALSA, PulseAudio, SYSVSHM, VirGL, STEAM_PIPE, VORTEK)
+  use the default `createSocket(rootPath, path)` — **no abstract namespace**.
+- The abstract socket name is the verbatim relative path (`/tmp/.X11-unix/X0`),
+  NOT the imagefs-absolute path.  Xlib expects exactly that name.
+
+---
+
+## 3. Env-var rules for the guest process (`BionicProgramLauncherComponent`)
+
+| Variable | Value | Reason |
+|---|---|---|
+| `DISPLAY` | `:0` | Wine display selection |
+| `ROOT` | `rootDir.getPath()` | Used by libredirect for known path rewrites |
+| `TMPDIR` | `rootDir + "/usr/tmp"` | Guest temp files |
+| `ANDROID_SYSVSHM_SERVER` | `rootDir + SYSVSHM_SERVER_PATH` | Shared memory socket |
+
+- Do NOT set `REDIRECT_CONFIG` or `REDIRECT_CONF` — libredirect ignores them.
+- Do NOT set `WINEDEBUG` in non-debug builds (kills CPU performance).
+- Do NOT set `DXVK_HUD` in production builds.
+
+---
+
+## 4. Steam game invites
+
+### Data flow
+
+```
+Steam network → SteamService.onPersonaStateReceived() / onFriendMsgReceived()
+    → PluviaApp.events.emit(SteamEvent.GameInviteReceived(invite))
+    → PluviaMain collects events → inviteViewModel.onInviteReceived(invite)
+    → pendingInvites StateFlow → GameInviteBanner (top of screen)
+                                → HomeScreen notification bar (bottom area)
+```
+
+### `SteamEvent`
+Add:
+```kotlin
+data class GameInviteReceived(val invite: GameInvite) : SteamEvent<Unit>
+```
+
+### `SteamService` — detecting invites
+- In `onPersonaStateReceived`: when a friend's `gamePlayedAppId` changes from
+  0 to non-zero AND they have a non-empty `connectString` (from rich presence),
+  emit `GameInviteReceived`.
+- When JavaSteam exposes `FriendMsgCallback` / rich-presence invite callbacks,
+  wire them to emit `GameInviteReceived` as well.
+- Use friend's cached avatar URL: `"https://avatars.steamstatic.com/${avatarHash}_full.jpg"`
+- Use game header URL: `"https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg"`
+
+### `InviteViewModel.acceptInvite` — when game IS running
+```kotlin
+// TODO once ContainerUtils exposes a run-command API:
+// ContainerUtils.runCommand("steam steam://connect/${invite.connectString}")
+// or pass +connect through the Wine process via a named pipe / socket.
+```
+
+### `NavigationDialog` — in-game side panel
+Add an **Invites** item (ACTION_GAME_INVITES = 6) after Edit Controls, before Exit.
+- Icon: `R.drawable.icon_friends` (or similar group/people icon)
+- Only show it when `pendingInvites.isNotEmpty()` — pass this flag from XServerScreen.
+- Tapping it opens an in-game invite list dialog (or slides in a side panel).
+
+### `XServerScreen` — showing the NavigationDialog
+- Pass current `pendingInvites` count to `NavigationDialog` constructor.
+- When ACTION_GAME_INVITES is selected, show an overlay (Compose `ModalBottomSheet`
+  or a full-screen `GameInviteListScreen`) listing pending invites.
+
+---
+
+## 5. Home screen notification / invite bar
+
+### Layout (bottom of Home screen, above the NavigationBar)
+
+The notification bar lives as an `AnimatedVisibility` section inserted between
+the `Scaffold`'s content area and the `bottomBar`:
+
+```kotlin
+// In HomeScreen Scaffold content:
+Column {
+    // normal content (Library / Downloads / Friends)
+    AnimatedVisibility(visible = pendingInvites.isNotEmpty()) {
+        InviteNotificationBar(invites = pendingInvites, ...)
+    }
+}
+```
+
+Alternatively, use a floating card above the bottom nav (zIndex elevation).
+
+### `InviteNotificationBar` component rules
+- Dark card, same `gnBgSurface` background, `gnBorderCard` stroke border.
+- Show the first pending invite prominently: avatar, friend name, game name.
+- "Join" button (Steam blue `#1E9FFF`) — calls `InviteViewModel.acceptInvite`.
+- Badge on the notification bar showing pending count if > 1.
+- Tapping the bar expands to show all pending invites (scrollable list of
+  `GameInviteBanner` cards stacked vertically in a bottom sheet).
+- Swiping down/dismissing a notification calls `dismissInvite`.
+
+### `HomeViewModel`
+Expose `pendingInvites: StateFlow<List<GameInvite>>` by delegating to
+`InviteViewModel` (injected in the same Hilt graph).
+
+### Tapping "Join Game" when game NOT installed
+1. Check if `appId` is in the user's library (`steamService.isAppInstalled(appId)`).
+2. If not installed: navigate to the game detail screen with a "Download & Play" prompt.
+3. If installed: immediately launch via `onClickPlay(appId, false)`.
+
+---
+
+## 6. Achievement notification display
+
+### When to show
+- When Wine's Steam overlay (or a polled `UserStatsCallback`) reports a new
+  achievement unlock event.
+- `UserStatsCallback` is already available in `SteamService.onUserStatsReceived`.
+
+### Data flow
+```
+UserStatsCallback (achievement unlock detected) →
+    PluviaApp.events.emit(SteamEvent.AchievementUnlocked(appId, achievementId, displayName, iconUrl)) →
+    PluviaMain → Shown as a transient Toast-style overlay on XServerScreen
+```
+
+### `SteamEvent` — add:
+```kotlin
+data class AchievementUnlocked(
+    val appId: Int,
+    val achievementId: String,
+    val displayName: String,
+    val iconUrl: String,
+) : SteamEvent<Unit>
+```
+
+### Achievement notification composable (in-game overlay)
+- Appears at the top-right corner of XServerScreen when in-game.
+- Dark card (same style as `GameInviteBanner`): achievement icon (48dp),
+  name (bold, `gnTextPrimary`), "Achievement Unlocked" label (`gnAccentGlow`).
+- Auto-dismisses after 5 seconds via `LaunchedEffect + delay(5000)`.
+- Does NOT pause the game.
+- Obeys the same dark-palette rules (no white backgrounds, Outfit font).
+
+---
+
+## 7. In-game side panel (swipe right-to-left)
+
+The panel is `NavigationDialog` shown on back-button press.
+
+**Current items:**
+1. Keyboard (ACTION_KEYBOARD = 1)
+2. Input Controls (ACTION_INPUT_CONTROLS = 2)
+3. Edit Controls (ACTION_EDIT_CONTROLS = 4)
+4. Edit Physical Controller (ACTION_EDIT_PHYSICAL_CONTROLLER = 5) — conditional
+5. Exit Game (ACTION_EXIT_GAME = 3)
+
+**Add:**
+6. Steam Invites (ACTION_GAME_INVITES = 6) — only when `pendingInviteCount > 0`
+   - Show a badge overlay on the icon with the pending invite count.
+   - Tapping launches `InviteListDialog` (or a Compose overlay pushed over XServerScreen).
+
+**Rules for NavigationDialog:**
+- Keep the grid layout; do NOT switch to a list layout.
+- Do NOT add more than 2 new items without also restructuring the grid for readability.
+- Icon tint must use `R.color.navigation_dialog_item_color` (same as all others).
+- Use `Bricolage Grotesque Regular` font for all labels (already applied via `R.font.bricolage_grotesque_regular`).
+
+---
+
+## 8. Launch error screen
+
+When Wine exits with non-zero status (status=137 = OOM/killed, status≠0 = crash):
+- Show a dark error card on top of the black XServerScreen.
+- Display: exit status code, last relevant Wine log lines (from `wine_output.log`),
+  and a "Report / Copy Log" button.
+- Do NOT auto-dismiss; the user must explicitly tap "Exit" or "Retry".
+- Retry re-calls `PluviaApp.xEnvironment?.startEnvironment()` without destroying the container.
+
+---
+
+## 9. General rules (restate for this context)
+
+- Outfit font only — never Inter, Roboto, or `sans-serif`.
+- Steam blue `#1E9FFF` for primary actions; never purple/violet.
+- No light backgrounds in any component in this file.
+- No card elevation drop shadows — use `strokeColor` border (`#FFFFFF18`).
+- All new Kotlin files in `app/src/main/java/app/gamenative/` must follow the
+  existing package structure (`ui/component/`, `ui/screen/`, `ui/model/`, `events/`).

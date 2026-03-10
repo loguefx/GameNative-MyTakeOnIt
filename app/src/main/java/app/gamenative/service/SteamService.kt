@@ -367,6 +367,21 @@ class SteamService : Service(), IChallengeUrlChanged {
         @Volatile
         var keepAlive: Boolean = false
 
+        /**
+         * Milliseconds after epoch when the current Steam session connected.
+         * Any invite emitted within INVITE_SESSION_GUARD_MS of this timestamp is suppressed.
+         * Steam sends a burst of PersonaStateCallbacks for every friend immediately after
+         * login; the second callback for the same friend can incorrectly look like a
+         * not-playing → playing transition because the first callback already inserted the
+         * friend into _friendsList with gameAppID=0.  Blocking invites for the first
+         * INVITE_SESSION_GUARD_MS eliminates this entire class of false positives without
+         * changing the real-time invite path that fires after the burst settles.
+         */
+        @Volatile
+        internal var sessionConnectedAtMs: Long = -1L
+
+        private const val INVITE_SESSION_GUARD_MS = 20_000L
+
         @Volatile
         var isImporting: Boolean = false
 
@@ -2929,6 +2944,7 @@ class SteamService : Service(), IChallengeUrlChanged {
 
         retryAttempt = 0
         isConnected = true
+        sessionConnectedAtMs = System.currentTimeMillis()
 
         var isAutoLoggingIn = false
 
@@ -2950,6 +2966,7 @@ class SteamService : Service(), IChallengeUrlChanged {
         Timber.i("Disconnected from Steam. User initiated: ${callback.isUserInitiated}")
 
         isConnected = false
+        sessionConnectedAtMs = -1L
 
         if (!isStopping && retryAttempt < MAX_RETRY_ATTEMPTS) {
             retryAttempt++
@@ -3061,19 +3078,37 @@ class SteamService : Service(), IChallengeUrlChanged {
 
         notificationHelper.notify("Disconnected...")
 
-        if (isLoggingOut || callback.result == EResult.LogonSessionReplaced) {
-            performLogOffDuties()
-
-            scope.launch { stop() }
-        } else if (callback.result == EResult.LoggedInElsewhere) {
-            // received when a client runs an app and wants to forcibly close another
-            // client running an app
-            val event = SteamEvent.ForceCloseApp
-            PluviaApp.events.emit(event)
-
-            reconnect()
-        } else {
-            reconnect()
+        when {
+            isLoggingOut -> {
+                // Explicit user-initiated logout — clear credentials and navigate to login.
+                performLogOffDuties()
+                scope.launch { stop() }
+            }
+            callback.result == EResult.LogonSessionReplaced -> {
+                // Goldberg's Steam API emulation (used by forceUseLegacyDrm games) briefly
+                // replaces our session while the game process holds a Steam client connection.
+                // The refresh token is still valid — do NOT clear credentials.
+                // Cancel background jobs and reconnect after the game process releases the session.
+                Timber.w("Steam session replaced (likely by in-game Goldberg Steam API) — will reconnect, NOT clearing credentials")
+                instance?.picsGetProductInfoJob?.cancel()
+                instance?.picsChangesCheckerJob?.cancel()
+                instance?.friendCheckerJob?.cancel()
+                scope.launch {
+                    // 4-second delay gives the game process time to release its Steam client
+                    // before we try to re-establish our own session.
+                    kotlinx.coroutines.delay(4_000)
+                    reconnect()
+                }
+            }
+            callback.result == EResult.LoggedInElsewhere -> {
+                // Another Steam client instance on a different device took over the session.
+                val event = SteamEvent.ForceCloseApp
+                PluviaApp.events.emit(event)
+                reconnect()
+            }
+            else -> {
+                reconnect()
+            }
         }
     }
 
@@ -3114,8 +3149,6 @@ class SteamService : Service(), IChallengeUrlChanged {
             return
         }
 
-        // Timber.d("Persona state received: ${callback.name}")
-
         scope.launch {
             val isLocal = callback.friendId == steamClient!!.steamID
             val avatarHash = callback.avatarHash.toHexString()
@@ -3144,8 +3177,19 @@ class SteamService : Service(), IChallengeUrlChanged {
                     PluviaApp.events.emit(event)
                 }
             } else {
-                // Update friends list: upsert this friend's persona
                 val friendId64 = callback.friendId.convertToUInt64()
+
+                // Check previous game state to detect when a friend STARTS playing.
+                // previousFriend is null the first time we see this friend (initial connection
+                // load).  We never emit an invite on first-seen — only when an already-known
+                // friend transitions from not-playing → playing, so we don't flood the bar
+                // with invites for everyone already in-game at login.
+                val previousFriend = _friendsList.value.find { it.steamId == friendId64 }
+                val wasPlaying = (previousFriend?.gameAppID ?: 0) != 0
+                val isNowPlaying = callback.gamePlayedAppId != 0
+                val isKnownFriend = previousFriend != null
+
+                // Update friends list: upsert this friend's persona
                 val updated = SteamFriend(
                     steamId = friendId64,
                     avatarHash = avatarHash,
@@ -3157,6 +3201,36 @@ class SteamService : Service(), IChallengeUrlChanged {
                 _friendsList.update { list ->
                     val without = list.filter { it.steamId != friendId64 }
                     (without + updated).sortedBy { it.name.lowercase() }
+                }
+
+                // Gate: only fire GameInviteReceived when there is an actual rich-presence
+                // connect string (lobby URL / "+connect …"). A PersonaState callback with
+                // gamePlayedAppId != 0 simply means a friend started playing — that is NOT
+                // a game invite. Without a real connectString the notification banner says
+                // "You have a game invite!" when the user received no invite at all.
+                //
+                // Real Steam invites arrive via FriendMessagesCallback / RichPresence keys
+                // which are not yet wired in JavaSteam. Until that work is done, connectString
+                // will always be empty from persona-state alone, so no false notifications fire.
+                // When RichPresence parsing is added, populate connectString from that source.
+                val connectString = "" // TODO: parse from RichPresence / FriendMessagesCallback
+                val sessionGuardPassed = sessionConnectedAtMs > 0 &&
+                    (System.currentTimeMillis() - sessionConnectedAtMs) > INVITE_SESSION_GUARD_MS
+                if (isKnownFriend && sessionGuardPassed && !wasPlaying && isNowPlaying && connectString.isNotEmpty()) {
+                    val avatarUrl = "https://avatars.steamstatic.com/${avatarHash}_full.jpg"
+                    val headerUrl = "https://cdn.cloudflare.steamstatic.com/steam/apps/${callback.gamePlayedAppId}/header.jpg"
+                    val invite = app.gamenative.data.GameInvite(
+                        id = "${friendId64}_${callback.gamePlayedAppId}_${System.currentTimeMillis()}",
+                        fromSteamId = friendId64.toString(),
+                        fromName = callback.playerName,
+                        fromAvatarUrl = avatarUrl,
+                        gameName = gameNameResolved,
+                        gameAppId = callback.gamePlayedAppId,
+                        gameHeaderUrl = headerUrl,
+                        connectString = connectString,
+                        receivedAt = System.currentTimeMillis(),
+                    )
+                    PluviaApp.events.emit(SteamEvent.GameInviteReceived(invite))
                 }
             }
         }
