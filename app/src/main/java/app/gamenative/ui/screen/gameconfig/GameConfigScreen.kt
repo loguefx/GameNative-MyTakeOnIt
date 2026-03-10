@@ -19,8 +19,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -31,6 +34,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -54,6 +58,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import kotlinx.coroutines.launch
 import androidx.compose.ui.unit.dp
@@ -61,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.round
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.gamenative.config.ConfigPreset
+import app.gamenative.config.KnownGameFixes
 import app.gamenative.ui.model.GameConfigViewModel
 import app.gamenative.config.DxVersion
 import app.gamenative.config.GameConfig
@@ -94,6 +100,8 @@ fun GameConfigScreen(
     val config by viewModel.config.collectAsState()
     val protonTier by viewModel.protonTier.collectAsState()
     val recommendedProton by viewModel.recommendedProtonVersion.collectAsState()
+    val knownFix by viewModel.knownFix.collectAsState()
+    val requiredProtonInstalled by viewModel.requiredProtonInstalled.collectAsState()
     var showProtonPicker by remember { mutableStateOf(false) }
     var showDxPicker by remember { mutableStateOf(false) }
     var showWinePicker by remember { mutableStateOf(false) }
@@ -123,7 +131,14 @@ fun GameConfigScreen(
                 },
                 actions = {
                     TextButton(onClick = { viewModel.resetToRecommended(appId, gameName) }) {
-                        Text("Reset", color = gnAccentPrimary, style = PluviaTypography.labelLarge)
+                        Icon(
+                            Icons.Default.Tune,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = gnAccentPrimary,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Recommended", color = gnAccentPrimary, style = PluviaTypography.labelLarge)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = gnBgDeepest),
@@ -153,7 +168,7 @@ fun GameConfigScreen(
                 }
             }
         },
-    ) { padding ->
+        ) { padding ->
         val c = config ?: return@Scaffold
         LazyColumn(
             modifier = Modifier
@@ -165,6 +180,19 @@ fun GameConfigScreen(
         ) {
             item {
                 HardwareSummaryCard(hardware = hardware, protonTier = protonTier)
+            }
+            // KnownGameFix banner — shown whenever a hardcoded fix exists for this game.
+            // This is the single most important card on the screen: it tells the user exactly
+            // why specific settings are being applied and warns them if the required Proton
+            // version isn't installed (which would cause a silent launch failure).
+            knownFix?.let { fix ->
+                item {
+                    KnownGameFixBanner(
+                        fix = fix,
+                        requiredProtonInstalled = requiredProtonInstalled,
+                        onApplyRecommended = { viewModel.resetToRecommended(appId, gameName) },
+                    )
+                }
             }
             item {
                 PresetChipRow(
@@ -484,6 +512,187 @@ fun GameConfigScreen(
             }
         }
     }
+    }
+}
+
+/**
+ * Displayed whenever a hardcoded fix exists for the current game.
+ *
+ * Two states:
+ *  • Green / nominal — fix is active and the required Proton version is installed.
+ *    Shows which Proton version, DX backend, and any key env var overrides are being applied.
+ *  • Amber / warning — the required Proton version is NOT installed.
+ *    The auto-migration will be silently skipped at launch, so the game will run on the wrong
+ *    Proton version and almost certainly crash. The user must download the required version from
+ *    the Compatibility Layer screen before launching.
+ */
+@Composable
+private fun KnownGameFixBanner(
+    fix: KnownGameFixes.GameFix,
+    requiredProtonInstalled: Boolean,
+    onApplyRecommended: () -> Unit,
+) {
+    val warningColor = Color(0xFFFFA726)
+    val successColor = Color(0xFF4CAF50)
+
+    val borderColor = if (requiredProtonInstalled) {
+        gnAccentPrimary.copy(alpha = 0.35f)
+    } else {
+        warningColor.copy(alpha = 0.5f)
+    }
+    val headerIconTint = if (requiredProtonInstalled) gnAccentGlow else warningColor
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (requiredProtonInstalled) {
+                gnBgSurface
+            } else {
+                warningColor.copy(alpha = 0.06f)
+            },
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+
+            // ── Header row ────────────────────────────────────────────────────────
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = if (requiredProtonInstalled) Icons.Default.AutoFixHigh else Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = headerIconTint,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(
+                    text = if (requiredProtonInstalled) "Game-Specific Fix Active" else "Required Component Not Installed",
+                    style = PluviaTypography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = if (requiredProtonInstalled) gnTextPrimary else warningColor,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+
+            // ── Required Proton version row ───────────────────────────────────────
+            fix.protonVersion?.let { proton ->
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "Required Compatibility Layer",
+                        style = PluviaTypography.bodySmall,
+                        color = gnTextSecondary,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = proton.displayName,
+                            style = PluviaTypography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = gnTextPrimary,
+                        )
+                        Icon(
+                            imageVector = if (requiredProtonInstalled) Icons.Default.CheckCircle else Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = if (requiredProtonInstalled) successColor else warningColor,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                }
+            }
+
+            // ── DX backend row ────────────────────────────────────────────────────
+            fix.dxVersion?.let { dx ->
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("DirectX Backend", style = PluviaTypography.bodySmall, color = gnTextSecondary)
+                    val backend = when (dx) {
+                        app.gamenative.config.DxVersion.DX12 -> "VKD3D (DX12)"
+                        app.gamenative.config.DxVersion.DX9  -> "DXVK / D8VK (DX9)"
+                        else -> "DXVK ($dx)"
+                    }
+                    Text(backend, style = PluviaTypography.bodySmall.copy(fontWeight = FontWeight.SemiBold), color = gnTextPrimary)
+                }
+            }
+
+            // ── Key env overrides summary ─────────────────────────────────────────
+            if (fix.extraEnvVars.isNotEmpty()) {
+                val overrideKeys = fix.extraEnvVars.keys
+                    .filter { it != "DXVK_ASYNC" && it != "DXVK_GPLASYNCCACHE" }
+                    .take(3)
+                if (overrideKeys.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Active Overrides", style = PluviaTypography.bodySmall, color = gnTextSecondary)
+                        Text(
+                            text = overrideKeys.joinToString(", "),
+                            style = PluviaTypography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = gnTextPrimary,
+                        )
+                    }
+                }
+            }
+
+            // ── Warning message when Proton version not installed ─────────────────
+            if (!requiredProtonInstalled) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(warningColor.copy(alpha = 0.10f), RoundedCornerShape(8.dp))
+                        .padding(10.dp),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "⚠ ${fix.protonVersion?.displayName ?: "Required version"} is not installed",
+                            style = PluviaTypography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = warningColor,
+                        )
+                        Text(
+                            text = "This game requires ${fix.protonVersion?.displayName ?: "a specific Proton version"} to run correctly. " +
+                                "Without it, the game will launch on the wrong compatibility layer and will likely crash. " +
+                                "Download it from the Compatibility Layer screen before launching.",
+                            style = PluviaTypography.labelSmall,
+                            color = warningColor.copy(alpha = 0.85f),
+                        )
+                    }
+                }
+            }
+
+            // ── Reason (why this fix exists) ──────────────────────────────────────
+            if (fix.reason.isNotBlank()) {
+                Text(
+                    // Trim to first sentence for the banner; full reason is in logs.
+                    text = fix.reason.substringBefore('.').trim() + ".",
+                    style = PluviaTypography.labelSmall,
+                    color = gnTextTertiary,
+                )
+            }
+
+            // ── Apply Recommended button ──────────────────────────────────────────
+            OutlinedButton(
+                onClick = onApplyRecommended,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = gnAccentPrimary),
+                border = androidx.compose.foundation.BorderStroke(1.dp, gnAccentPrimary.copy(alpha = 0.5f)),
+            ) {
+                Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "Apply Game-Specific Settings",
+                    style = PluviaTypography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                )
+            }
+        }
     }
 }
 

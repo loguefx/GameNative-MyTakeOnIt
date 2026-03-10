@@ -56,61 +56,66 @@ object KnownGameFixes {
         // ────────────────────────────────────────────────────────────────────────────────
         // BIOSHOCK 2 REMASTERED (409720) — Aspyr/Unreal Engine 3, DX9 via DXVK
         // ────────────────────────────────────────────────────────────────────────────────
-        // Root cause of black screen: ColdClientLoader (steamclient_loader_x64.exe) starts
-        // as an ARM64 native process and calls CreateProcess for Bioshock2HD.exe.  On Adreno
-        // devices this CreateProcess silently fails — Bioshock2HD.exe never receives init_peb
-        // and Wine produces no further output.  The three "Button" windows that appear in
-        // wine_output.log are wfm.exe's own startup UI, not the game.
+        // Crash #1 (black screen / no output): ColdClientLoader (steamclient_loader_x64.exe)
+        // starts as an ARM64 native process and calls CreateProcess for Bioshock2HD.exe.
+        // On Adreno devices this CreateProcess silently fails — Bioshock2HD.exe never
+        // receives init_peb and Wine produces no further output.
+        // Fix: forceUseLegacyDrm = true bypasses ColdClientLoader entirely and launches
+        // Bioshock2HD.exe directly via winhandler.exe with Goldberg steam_api64 in place.
         //
-        // Fix: forceUseLegacyDrm = true bypasses ColdClientLoader entirely.  We replace the
-        // game-directory steam_api64.dll with the Goldberg standalone build (replaceSteamApi)
-        // and launch Bioshock2HD.exe directly.  This is the same code path that works for all
-        // other DRM-free / Aspyr titles and avoids the ColdClientLoader CreateProcess bug.
+        // Crash #2 (Proton 10.0 page fault): UE3 regression where the Aspyr crypto check
+        // loads crypt32+rsaenh, unloads them, then reads a dangling pointer → thread 012c
+        // page fault.  Fix: pin Proton 9.0 (regression is 10.0-only).
         //
-        // Belt-and-suspenders: WINEDLLOVERRIDES prevents mfplat/xaudio2 from hanging if the
-        // intro video is attempted; -nosplash -nointro skips it at the game-argv level.
+        // Crash #3 (status=0 clean exit after ~4 s on Proton 9.0): Observed in logcat when
+        // WINEDLLOVERRIDES from DXVKHelper (winepulse.drv=n,b) was silently dropped by a
+        // put() in applyGameConfig.  Without winepulse.drv=n,b the XAudio2 → PulseAudio
+        // initialisation chain fails and the game exits immediately with code 0.
+        // Fix: LaunchOrchestrator.mergeWineDllOverrides() now appends instead of replacing,
+        // AND winepulse.drv=n,b is listed explicitly here as belt-and-suspenders.
+        //
+        // Do NOT add d3d9=n,b.  BioShock 2 uses DXVK's DX9 path via the "Wrapper" graphics
+        // driver; an explicit d3d9=n,b breaks DXVK's own dll-override chain → black screen.
         409720 to GameFix(
             appId = 409720,
             gameName = "BioShock 2 Remastered",
-            // Proton 9.0 is required — Proton 10.0 has a UE3 regression where the game's
-            // Aspyr crypto check loads crypt32+rsaenh, unloads them immediately, then reads
-            // a dangling pointer into the freed rsaenh address space → page fault in thread 012c.
-            // Every other UE3/Aspyr title in KnownGameFixes also pins Proton 9.0 for this reason.
             protonVersion = ProtonVersion.PROTON_9_0,
             dxVersion = DxVersion.DX9,
             forceUseLegacyDrm = true,
-            // Hardcoded path guarantees the exe is found even when Steam appinfo is not yet loaded
-            // at composition time and getInstalledExe() returns empty.
+            // Hardcoded path guarantees the exe is found even when Steam appinfo is not yet
+            // loaded at launch time and getInstalledExe() returns empty.
             gameExePath = "Build/Final/Bioshock2HD.exe",
             extraEnvVars = mapOf(
-                // mfplat.dll=n,b: prevent intro video from hanging Wine's media pipeline (WMF).
-                // xaudio2_7.dll=n,b: force native XAudio2 so audio init doesn't block render thread.
-                // rsaenh=n,b: prevent Wine from freeing rsaenh while the game still holds a function
-                //   pointer into it. Without this, crypt32/rsaenh are loaded, used, freed, and the
-                //   Aspyr integrity check's cached vtable pointer becomes a dangling reference → crash.
-                // Do NOT add d3d9=n,b here. BioShock 2 runs under "Wrapper" graphics (D8VK/OpenGL
-                // backend). Forcing DXVK's d3d9 shim explicitly in WINEDLLOVERRIDES breaks D8VK's
-                // own dll-override chain and causes an immediate black screen.
-                "WINEDLLOVERRIDES" to "mfplat.dll=n,b;xaudio2_7.dll=n,b;rsaenh=n,b",
-                // DXVK_ASYNC belt-and-suspenders: applyGameConfig also sets this, but explicit
-                // KnownGameFix override guarantees it wins even over a stale saved GameConfig.
+                // winepulse.drv=n,b: force native PulseAudio driver so XAudio2 → PulseAudio
+                //   chain initialises correctly.  Without this, audio init fails and the game
+                //   exits cleanly (~4 s, status=0) before reaching the main menu.
+                //   NOTE: LaunchOrchestrator.mergeWineDllOverrides() also preserves the value
+                //   DXVKHelper sets for this key, but listing it explicitly here ensures it
+                //   survives even if the call order ever changes.
+                // mfplat.dll=n,b: prevent WMF intro-video from hanging Wine's media pipeline.
+                //   Belt-and-suspenders alongside -nosplash -nointro in launchArgs.
+                // xaudio2_7.dll=n,b: force native XAudio2 so audio init doesn't block the
+                //   render thread on ARM (builtin can spin-wait on PulseAudio connect).
+                // rsaenh=n,b: prevents a Proton 10.0-specific dangling-pointer crash.
+                //   No-op on Proton 9.0 (falls back to builtin); kept for forward safety.
+                "WINEDLLOVERRIDES" to "winepulse.drv=n,b;mfplat.dll=n,b;xaudio2_7.dll=n,b;rsaenh=n,b",
+                // DXVK_ASYNC belt-and-suspenders: applyGameConfig also sets this, but the
+                // explicit KnownGameFix entry guarantees it wins over a stale saved GameConfig.
                 "DXVK_ASYNC" to "1",
                 "DXVK_GPLASYNCCACHE" to "1",
-                // PulseAudio latency: override from the container default (144 ms) to 60 ms.
-                // 144 ms causes the XAudio2 initialisation to block for multiple frames on ARM,
-                // producing a visible freeze at the title screen before audio starts.
+                // PulseAudio latency: 144 ms (container default) causes XAudio2 init to block
+                // for multiple frames on ARM → visible freeze before audio starts.
                 "PULSE_LATENCY_MSEC" to "60",
-                // Disable strict D3D shader math — the Wine registry key strict_shader_math=1
-                // from the container default config forces synchronous exact-precision shader
-                // compilation, stalling the render thread on every new shader combination.
-                // Setting WINE_D3D_CONFIG here overrides the registry value at runtime.
+                // strict_shader_math=1 in the container Wine registry forces synchronous
+                // exact-precision shader compilation, stalling the render thread on every new
+                // shader.  WINE_D3D_CONFIG overrides the registry key at runtime.
                 "WINE_D3D_CONFIG" to "strict_shader_math=0",
             ),
             launchArgs = "-nosplash -nointro",
-            reason = "ColdClientLoader CreateProcess silently fails on Adreno; bypass via direct exe + replaceSteamApi. " +
-                "Proton 9.0 required: 10.0 regression causes dangling pointer crash in Aspyr crypto check (rsaenh freed while in use). " +
-                "rsaenh=n,b prevents the premature free. DXVK_ASYNC + WINE_D3D_CONFIG=strict_shader_math=0 prevent shader stutter. " +
-                "mfplat/xaudio2 overrides prevent intro-video hang.",
+            reason = "Three distinct crash modes fixed: (1) ColdClientLoader ARM64 CreateProcess bug → forceUseLegacyDrm + Goldberg steam_api64. " +
+                "(2) Proton 10.0 rsaenh dangling-pointer page fault → pinned to Proton 9.0. " +
+                "(3) status=0 clean exit after ~4 s → winepulse.drv=n,b missing from WINEDLLOVERRIDES caused XAudio2→PulseAudio init failure; " +
+                "fixed by mergeWineDllOverrides() in LaunchOrchestrator and explicit winepulse.drv=n,b here.",
         ),
 
         // ────────────────────────────────────────────────────────────────────────────────

@@ -279,18 +279,26 @@ object LaunchOrchestrator {
         }
 
         // config.extraEnvVars (from recommender or saved config) applied first.
+        // WINEDLLOVERRIDES is MERGED (appended) rather than replaced so that infrastructure
+        // overrides set earlier by DXVKHelper (winepulse.drv=n,b for PulseAudio, d3d8=n,b for
+        // DX8 games) are never silently dropped when a saved config or KnownGameFix supplies
+        // its own DLL overrides.  All other env vars still use put (KnownGameFix wins).
         config.extraEnvVars.forEach { (key, value) ->
-            envVars.put(key, value)
+            if (key == "WINEDLLOVERRIDES") mergeWineDllOverrides(envVars, value)
+            else envVars.put(key, value)
         }
 
         // KnownGameFixes ALWAYS wins — re-apply even if a saved config already set different values.
-        // This ensures fixes like mfplat.dll=n,b for BioShock 2 are never lost to a stale saved config.
+        // WINEDLLOVERRIDES is merged (same reason as above) so DXVKHelper's audio overrides survive.
         val steamAppId = try { appId.toLong() } catch (_: Exception) {
             try { appId.substringAfterLast("_").toLong() } catch (_: Exception) { 0L }
         }
         if (steamAppId != 0L) {
             KnownGameFixes.get(steamAppId.toInt())?.let { fix ->
-                fix.extraEnvVars.forEach { (key, value) -> envVars.put(key, value) }
+                fix.extraEnvVars.forEach { (key, value) ->
+                    if (key == "WINEDLLOVERRIDES") mergeWineDllOverrides(envVars, value)
+                    else envVars.put(key, value)
+                }
                 if (fix.launchArgs.isNotEmpty()) {
                     envVars.put("GN_WINE_LAUNCH_ARGS", fix.launchArgs)
                 }
@@ -301,6 +309,50 @@ object LaunchOrchestrator {
         // Game-specific launch args flow into ColdClientLoader.ini ExeCommandLine via GN_WINE_LAUNCH_ARGS.
         if (envVars.get("GN_WINE_LAUNCH_ARGS").isEmpty() && config.wineLaunchArgs.isNotEmpty()) {
             envVars.put("GN_WINE_LAUNCH_ARGS", config.wineLaunchArgs)
+        }
+
+        // Diagnostic: log the final env var values that matter most for compatibility.
+        // These lines appear in logcat with tag "GameLaunch" — grep for "LaunchEnv" to filter.
+        val dllOverrides = envVars.get("WINEDLLOVERRIDES")
+        if (dllOverrides.isEmpty()) {
+            Timber.tag("GameLaunch").w(
+                "LaunchEnv appId=$appId WINEDLLOVERRIDES=<empty> — audio/DRM overrides not applied!"
+            )
+        } else {
+            Timber.tag("GameLaunch").d(
+                "LaunchEnv appId=$appId WINEDLLOVERRIDES=[$dllOverrides]"
+            )
+        }
+        val pulseLatency = envVars.get("PULSE_LATENCY_MSEC")
+        if (pulseLatency.isNotEmpty()) {
+            Timber.tag("GameLaunch").d("LaunchEnv appId=$appId PULSE_LATENCY_MSEC=$pulseLatency")
+        }
+        val winePath = envVars.get("WINEPATH")
+        if (winePath.isNotEmpty()) {
+            Timber.tag("GameLaunch").d("LaunchEnv appId=$appId WINEPATH=$winePath")
+        }
+    }
+
+    /**
+     * Appends [newOverrides] (semicolon-separated WINEDLLOVERRIDES tokens) to the existing
+     * WINEDLLOVERRIDES in [envVars], skipping any token that is already present.
+     *
+     * Using append-not-replace preserves infrastructure overrides written earlier by
+     * DXVKHelper (e.g. winepulse.drv=n,b for PulseAudio, d3d8=n,b for DX8 games) when a
+     * KnownGameFix or saved GameConfig also specifies WINEDLLOVERRIDES.  Without merging,
+     * the put() would silently drop the audio driver override and cause games like BioShock 2
+     * Remastered to exit cleanly after ~4 s when XAudio2 → PulseAudio initialisation fails.
+     */
+    private fun mergeWineDllOverrides(envVars: com.winlator.core.envvars.EnvVars, newOverrides: String) {
+        val existing = envVars.get("WINEDLLOVERRIDES")
+        if (existing.isEmpty()) {
+            envVars.put("WINEDLLOVERRIDES", newOverrides)
+            return
+        }
+        val existingSet = existing.split(";").map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+        val toAdd = newOverrides.split(";").map { it.trim() }.filter { it.isNotEmpty() && it !in existingSet }
+        if (toAdd.isNotEmpty()) {
+            envVars.put("WINEDLLOVERRIDES", "$existing;${toAdd.joinToString(";")}")
         }
     }
 

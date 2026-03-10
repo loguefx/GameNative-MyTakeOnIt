@@ -163,7 +163,36 @@ object SteamUtils {
         val steamAppId = ContainerUtils.extractGameIdFromContainerId(appId)
         val appDirPath = SteamService.getAppDirPath(steamAppId)
         if (MarkerUtils.hasMarker(appDirPath, Marker.STEAM_DLL_REPLACED)) {
-            return
+            // Marker says we already replaced steam_api — verify the Goldberg DLL is still in place.
+            // A Steam game update can silently restore the original steam_api64.dll, making the
+            // marker stale.  If that happens, the game tries to connect to a real Steam client
+            // (which is not running) and exits immediately with status=0 after a ~4 s timeout.
+            val goldberg64Size = goldbergDllSize(context, "steam_api64.dll")
+            val goldberg32Size = goldbergDllSize(context, "steam_api.dll")
+            val anyReverted = Paths.get(appDirPath).toFile()
+                .walkTopDown().maxDepth(10).any { file ->
+                    val name = file.name.lowercase()
+                    when {
+                        name == "steam_api64.dll" && goldberg64Size > 0 ->
+                            file.length() != goldberg64Size
+                        name == "steam_api.dll" && goldberg32Size > 0 ->
+                            file.length() != goldberg32Size
+                        else -> false
+                    }
+                }
+            if (anyReverted) {
+                Timber.tag("GameLaunch").w(
+                    "STEAM_DLL_REPLACED marker set but a steam_api DLL no longer matches " +
+                    "Goldberg asset size — game update likely restored the original. " +
+                    "Clearing marker and re-running DLL replacement for appId=$appId"
+                )
+                MarkerUtils.removeMarker(appDirPath, Marker.STEAM_DLL_REPLACED)
+            } else {
+                Timber.tag("GameLaunch").d(
+                    "replaceSteamApi skipped (STEAM_DLL_REPLACED marker set, Goldberg DLL verified) appId=$appId"
+                )
+                return
+            }
         }
         MarkerUtils.removeMarker(appDirPath, Marker.STEAM_DLL_RESTORED)
         MarkerUtils.removeMarker(appDirPath, Marker.STEAM_COLDCLIENT_USED)
@@ -1287,6 +1316,19 @@ object SteamUtils {
 
     fun getSteam3AccountId(): Long? {
         return SteamService.userSteamId?.accountID?.toLong()
+    }
+
+    /**
+     * Returns the byte-size of the Goldberg [dllName] bundled in assets/steampipe/.
+     * Used by replaceSteamApi to detect whether a game update has restored the original DLL.
+     * Returns -1 on any error so the caller can skip the size check safely.
+     */
+    private fun goldbergDllSize(context: Context, dllName: String): Long {
+        return try {
+            context.assets.openFd("steampipe/$dllName").use { it.length }
+        } catch (_: Exception) {
+            -1L
+        }
     }
 
     /**
