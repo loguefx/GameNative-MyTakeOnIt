@@ -276,7 +276,12 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         envVars.put("WINE_X11FORCEGLX", "1");
         envVars.put("WINE_GST_NO_GL", "1");
         envVars.put("SteamGameId", "0");
-        envVars.put("WINEFSYNC", "1");
+        // WINEFSYNC requires futex2 kernel support unavailable on most Android kernels.
+        // Default to "0" here; LaunchOrchestrator sets the real value from GameConfig.fsyncEnabled,
+        // which is merged via putAll(this.envVars) below and wins over this default.
+        if (this.envVars == null || !this.envVars.has("WINEFSYNC")) {
+            envVars.put("WINEFSYNC", "0");
+        }
         envVars.put("__GL_THREADED_OPTIMIZATIONS", "1");
 
         String primaryDNS = "8.8.4.4";

@@ -134,10 +134,23 @@ object LaunchOrchestrator {
         // Step 1 — return saved user config (preserves manual customizations)
         val saved = GameConfigStore.load(context, appId)
         if (saved != null) {
-            // Even for saved configs, apply crash recovery and adaptive tuning.
-            // Crash recovery can downgrade a saved config when the game keeps crashing;
-            // adaptive tuning ensures it fits current thermal/memory conditions.
-            val recovered = CrashRecoveryManager.applyRecovery(context, appId, saved)
+            // Re-apply KnownGameFixes.protonVersion in-memory so the version picker "Recommended"
+            // badge and diagnostic UI always reflect the current fix, even when the stored config
+            // was generated before the fix was added or was using a different version.
+            // We intentionally do NOT re-save here: only the recommender path (first launch or
+            // "Recommended" button) should update the stored config, preserving user intent.
+            val fixedSaved = run {
+                val fixId = try { appId.substringAfterLast("_").toLong() } catch (_: Exception) { 0L }
+                val fix = if (fixId != 0L) KnownGameFixes.get(fixId.toInt()) else null
+                val requiredVersion = fix?.protonVersion
+                if (requiredVersion != null && requiredVersion != saved.protonVersion) {
+                    Timber.tag("GameLaunch").i(
+                        "KnownGameFix: in-memory protonVersion override ${saved.protonVersion} → $requiredVersion for $appId"
+                    )
+                    saved.copy(protonVersion = requiredVersion)
+                } else saved
+            }
+            val recovered = CrashRecoveryManager.applyRecovery(context, appId, fixedSaved)
             return AdaptivePrelaunchTuner.tune(recovered, context)
         }
 

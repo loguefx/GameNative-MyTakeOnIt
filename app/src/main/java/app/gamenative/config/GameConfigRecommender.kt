@@ -134,7 +134,9 @@ object GameConfigRecommender {
             vkd3dWorkerThreads       = (hardware.cpuPCoreCount / 2).coerceAtLeast(2),
             vkd3dShaderModel         = shaderModel,
             esyncEnabled             = true,
-            fsyncEnabled             = true,
+            // WINEFSYNC requires futex2 kernel support unavailable on Android; ESYNC covers the same
+            // threading wins via eventfd. Defaulting to false avoids log floods and fallback slowdowns.
+            fsyncEnabled             = false,
             wineDebug                = false,
             box64BigBlock            = true,
             box64StrongMem           = true,

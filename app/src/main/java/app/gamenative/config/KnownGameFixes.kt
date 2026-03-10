@@ -72,6 +72,11 @@ object KnownGameFixes {
         409720 to GameFix(
             appId = 409720,
             gameName = "BioShock 2 Remastered",
+            // Proton 9.0 is required — Proton 10.0 has a UE3 regression where the game's
+            // Aspyr crypto check loads crypt32+rsaenh, unloads them immediately, then reads
+            // a dangling pointer into the freed rsaenh address space → page fault in thread 012c.
+            // Every other UE3/Aspyr title in KnownGameFixes also pins Proton 9.0 for this reason.
+            protonVersion = ProtonVersion.PROTON_9_0,
             dxVersion = DxVersion.DX9,
             forceUseLegacyDrm = true,
             // Hardcoded path guarantees the exe is found even when Steam appinfo is not yet loaded
@@ -80,10 +85,13 @@ object KnownGameFixes {
             extraEnvVars = mapOf(
                 // mfplat.dll=n,b: prevent intro video from hanging Wine's media pipeline (WMF).
                 // xaudio2_7.dll=n,b: force native XAudio2 so audio init doesn't block render thread.
+                // rsaenh=n,b: prevent Wine from freeing rsaenh while the game still holds a function
+                //   pointer into it. Without this, crypt32/rsaenh are loaded, used, freed, and the
+                //   Aspyr integrity check's cached vtable pointer becomes a dangling reference → crash.
                 // Do NOT add d3d9=n,b here. BioShock 2 runs under "Wrapper" graphics (D8VK/OpenGL
                 // backend). Forcing DXVK's d3d9 shim explicitly in WINEDLLOVERRIDES breaks D8VK's
                 // own dll-override chain and causes an immediate black screen.
-                "WINEDLLOVERRIDES" to "mfplat.dll=n,b;xaudio2_7.dll=n,b",
+                "WINEDLLOVERRIDES" to "mfplat.dll=n,b;xaudio2_7.dll=n,b;rsaenh=n,b",
                 // DXVK_ASYNC belt-and-suspenders: applyGameConfig also sets this, but explicit
                 // KnownGameFix override guarantees it wins even over a stale saved GameConfig.
                 "DXVK_ASYNC" to "1",
@@ -100,7 +108,8 @@ object KnownGameFixes {
             ),
             launchArgs = "-nosplash -nointro",
             reason = "ColdClientLoader CreateProcess silently fails on Adreno; bypass via direct exe + replaceSteamApi. " +
-                "DXVK_ASYNC + WINE_D3D_CONFIG=strict_shader_math=0 prevent the freeze caused by synchronous shader compilation. " +
+                "Proton 9.0 required: 10.0 regression causes dangling pointer crash in Aspyr crypto check (rsaenh freed while in use). " +
+                "rsaenh=n,b prevents the premature free. DXVK_ASYNC + WINE_D3D_CONFIG=strict_shader_math=0 prevent shader stutter. " +
                 "mfplat/xaudio2 overrides prevent intro-video hang.",
         ),
 

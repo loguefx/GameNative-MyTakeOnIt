@@ -8,10 +8,14 @@ import app.gamenative.service.SteamService
 import app.gamenative.service.epic.EpicService
 import app.gamenative.service.gog.GOGConstants
 import app.gamenative.service.gog.GOGService
+import app.gamenative.config.KnownGameFixes
+import app.gamenative.config.ProtonVersion
 import app.gamenative.profile.GameProfileOverrides
 import app.gamenative.profile.GameProfileStore
 import app.gamenative.utils.BestConfigService
 import app.gamenative.utils.CustomGameScanner
+import com.winlator.contents.ContentProfile
+import com.winlator.contents.ContentsManager
 import com.winlator.container.Container
 import com.winlator.container.ContainerData
 import com.winlator.container.ContainerManager
@@ -954,14 +958,98 @@ object ContainerUtils {
     }
 
     /**
-     * Applies per-game profile overrides to container data (resolutionScale, dxVersionOverride, compatibilityLayerVersionId).
-     * Used in createNewContainer and when saving from Game Settings so existing containers get updated.
-     * When compatibilityLayerVersionId is set (version picker selection), container wineVersion is synced
-     * so launch uses ContentsManager.getInstallDir for that version — same path WineInfo.fromIdentifier uses.
+     * Maps a ProtonVersion enum to the version number substring used to identify installed Proton
+     * content profiles (e.g. PROTON_9_0 → "9.0"). Returns null for version types that don't map
+     * to a specific installed Proton build (Wine-GE, stock Wine).
+     */
+    private fun protonVersionToPattern(version: ProtonVersion): String? = when (version) {
+        ProtonVersion.PROTON_10_0  -> "10.0"
+        ProtonVersion.PROTON_9_0   -> "9.0"
+        ProtonVersion.PROTON_8_0   -> "8.0"
+        ProtonVersion.PROTON_7_0   -> "7.0"
+        ProtonVersion.WINE_GE_LATEST, ProtonVersion.STOCK_WINE -> null
+    }
+
+    /**
+     * Returns the container wineVersion identifier string (e.g. "proton-9.0-arm64ec") required by
+     * KnownGameFixes for this Steam game, or null if:
+     *  - the game is not a Steam game
+     *  - no KnownGameFix exists for this appId
+     *  - the fix does not specify a protonVersion (WINE_GE / STOCK_WINE)
+     *  - no matching Proton version is currently installed (user must download it first)
+     *
+     * This drives the auto-migration in applyPerGameContainerOverrides so containers created before
+     * a fix was added are silently upgraded on the next launch.
+     */
+    fun resolveKnownFixWineVersion(context: Context, appId: String): String? {
+        if (extractGameSourceFromContainerId(appId) != GameSource.STEAM) return null
+        val steamAppId = try { extractGameIdFromContainerId(appId) } catch (_: Exception) { return null }
+        val fix = KnownGameFixes.get(steamAppId) ?: return null
+        val pattern = fix.protonVersion?.let { protonVersionToPattern(it) } ?: return null
+        return try {
+            val cm = ContentsManager(context)
+            cm.syncContents()
+
+            // Pass 1: externally downloaded profiles tracked by ContentsManager.
+            val protonProfiles = cm.getProfiles(ContentProfile.ContentType.CONTENT_TYPE_PROTON)
+            val profileMatch = protonProfiles?.firstOrNull { profile ->
+                profile.verName?.contains(pattern) == true
+            }
+            if (profileMatch != null) {
+                Timber.d("resolveKnownFixWineVersion: using downloaded profile for $appId: proton-${profileMatch.verName}")
+                return "proton-${profileMatch.verName}"
+            }
+
+            // Pass 2: built-in bundled versions that ship inside the APK's imagefs /opt/ directory.
+            // These are not tracked by ContentsManager but are valid Wine paths (e.g. proton-9.0-arm64ec).
+            val imageFs = com.winlator.xenvironment.ImageFs.find(context)
+            val optDir = File(imageFs.rootDir, "opt")
+            val builtinMatch = optDir.listFiles()
+                ?.filter { it.isDirectory && it.name.startsWith("proton") && it.name.contains(pattern) }
+                // Prefer arm64ec builds; fall back to x86_64 if arm64ec is absent.
+                ?.sortedWith(compareByDescending { it.name.contains("arm64ec") })
+                ?.firstOrNull()
+                ?.name
+            if (builtinMatch != null) {
+                Timber.d("resolveKnownFixWineVersion: using built-in /opt entry for $appId: $builtinMatch")
+                return builtinMatch
+            }
+
+            Timber.w("KnownGameFix for $appId requires Proton $pattern but no matching version is installed — skipping auto-migrate")
+            null
+        } catch (e: Exception) {
+            Timber.w(e, "resolveKnownFixWineVersion failed for $appId: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Applies per-game profile overrides to container data. Called on every launch so both new
+     * and existing containers are always in sync with the current requirements.
+     *
+     * Priority stack (lowest → highest):
+     *   1. containerData as loaded from disk
+     *   2. KnownGameFixes.protonVersion — auto-migrates wineVersion to the required Proton build
+     *   3. GameProfileOverrides.compatibilityLayerVersionId — user's explicit version picker choice
+     *   4. GameProfileOverrides.resolutionScale / dxVersionOverride — other user overrides
+     *
+     * When compatibilityLayerVersionId is set, container wineVersion is synced so launch uses
+     * ContentsManager.getInstallDir for that version — same path WineInfo.fromIdentifier uses.
      */
     fun applyPerGameContainerOverrides(context: Context, appId: String, containerData: ContainerData): ContainerData {
-        val overrides = GameProfileStore.load(context, appId) ?: return containerData
         var result = containerData
+
+        // Layer 2: KnownGameFixes.protonVersion — auto-migrate existing containers.
+        // This ensures a game that was previously launched with the wrong Proton version is
+        // silently corrected on the next launch without any user action.
+        val knownFixVersion = resolveKnownFixWineVersion(context, appId)
+        if (knownFixVersion != null && result.wineVersion != knownFixVersion) {
+            Timber.i("KnownGameFix: auto-migrating wineVersion '${result.wineVersion}' → '$knownFixVersion' for $appId")
+            result = result.copy(wineVersion = knownFixVersion)
+        }
+
+        // Layer 3+: user's explicit per-game profile overrides win over KnownGameFixes.
+        val overrides = GameProfileStore.load(context, appId) ?: return result
         if (overrides.compatibilityLayerVersionId != null) {
             result = result.copy(wineVersion = overrides.compatibilityLayerVersionId)
         }
@@ -1028,7 +1116,6 @@ object ContainerUtils {
             GameSource.CUSTOM_GAME -> {
                 CustomGameScanner.getFolderPathFromAppId(appId)
             }
-            else -> null
         }
 
         if (gameFolderPath != null) {

@@ -1,0 +1,204 @@
+---
+description: Smart game config auto-apply — how KnownGameFixes drives container settings, the priority layer stack, user override rules, and the Recommended button. Read before touching ContainerUtils, LaunchOrchestrator, GameConfigRecommender, or KnownGameFixes.
+globs: ["**/*.kt", "**/*.java"]
+alwaysApply: true
+---
+
+# GameNative — Smart Game Config: Auto-Apply & Override Layers
+
+The app must **never** require the user to manually set Proton/Wine versions, DX wrapper,
+or compatibility flags to get a known game running. `KnownGameFixes` is the authoritative
+database of "what this game needs." Every launch pipeline must enforce those requirements
+automatically — even for containers created before the fix was added.
+
+---
+
+## The Problem We Are Solving
+
+GameHub makes users manually pick Proton 9 vs 10, enable/disable fsync, set WINEDLLOVERRIDES
+for every game they want to play. That is the core reason this project exists. We must never
+replicate that UX failure.
+
+Every game in `KnownGameFixes` must boot correctly on first launch with zero user interaction.
+If the game needs Proton 9 and the container already has Proton 10, we migrate it automatically
+at launch. If a WINEDLLOVERRIDE is required to prevent a crash, it is applied unconditionally.
+
+---
+
+## Config Layer Stack — Priority (lowest → highest)
+
+```
+1. ContainerData defaults (from PrefManager / DefaultVersion)
+        ↓
+2. KnownGameFixes.protonVersion  (auto-migrates container.wineVersion)
+        ↓
+3. GameConfigRecommender         (hardware-optimal settings: DXVK, VKD3D, Box64 tuning)
+        ↓
+4. CrashRecoveryManager          (downgrades after repeated crashes)
+        ↓
+5. AdaptivePrelaunchTuner        (momentary thermal/memory pressure reduction)
+        ↓
+6. KnownGameFixes.extraEnvVars   (ALWAYS re-applied last in applyGameConfig — never skipped)
+        ↓
+7. GameProfileOverrides          (explicit user choice — compatibilityLayerVersionId etc.)
+```
+
+**Higher number = higher priority.** User's explicit manual choice (#7) beats everything.
+KnownGameFixes env vars (#6) beat a stale saved GameConfig. KnownGameFixes protonVersion (#2)
+beats whatever the container was created with, unless the user explicitly overrode it (#7).
+
+---
+
+## Where Each Thing Is Enforced
+
+### Container.wineVersion (which Wine binary launches)
+
+**File:** `app/src/main/java/app/gamenative/utils/ContainerUtils.kt`
+
+`applyPerGameContainerOverrides()` is the single choke-point before every launch. It now
+applies KnownGameFixes **before** the user-override layer:
+
+```kotlin
+fun applyPerGameContainerOverrides(context, appId, containerData): ContainerData {
+    var result = containerData
+
+    // Layer 2: KnownGameFixes protonVersion (baseline, auto-migrate)
+    val knownFixVersion = resolveKnownFixWineVersion(context, appId)
+    if (knownFixVersion != null && result.wineVersion != knownFixVersion) {
+        Timber.i("KnownGameFix: migrating wineVersion → $knownFixVersion for $appId")
+        result = result.copy(wineVersion = knownFixVersion)
+    }
+
+    // Layer 7: user's explicit pick wins
+    val overrides = GameProfileStore.load(context, appId) ?: return result
+    if (overrides.compatibilityLayerVersionId != null) {
+        result = result.copy(wineVersion = overrides.compatibilityLayerVersionId)
+    }
+    ...
+}
+```
+
+`resolveKnownFixWineVersion(context, appId)` maps `ProtonVersion` enum → installed version
+identifier string (`"proton-9.0-arm64ec"`) by scanning `ContentsManager.getProfiles(PROTON)`.
+Returns null if the game has no KnownGameFix, the fix has no protonVersion requirement, or
+the required version is not installed (in which case no migration happens and the user must
+download it first via the Compatibility Layer screen).
+
+### Env vars (WINEDLLOVERRIDES, DXVK_ASYNC, etc.)
+
+**File:** `app/src/main/java/app/gamenative/launch/LaunchOrchestrator.kt`
+
+`applyGameConfig()` **always** re-applies `KnownGameFixes.extraEnvVars` last, even if the
+caller has a saved GameConfig with different values. This is unconditional — no "if fix exists"
+guard is needed; the loop is a no-op when the fix map is empty.
+
+### GameConfig.protonVersion (informational / UI)
+
+`resolveGameConfig()` re-applies `KnownGameFixes.protonVersion` in-memory when loading a
+saved config. This keeps the version picker's "Recommended" badge accurate even when the
+stored config was generated before the fix was added. The re-applied value is **not written
+back to disk** — the stored config is only updated when the recommender runs (first launch) or
+the user presses "Recommended."
+
+---
+
+## ProtonVersion → wineVersion Identifier Mapping
+
+```kotlin
+private fun protonVersionToPattern(version: ProtonVersion): String? = when (version) {
+    ProtonVersion.PROTON_10_0   -> "10.0"
+    ProtonVersion.PROTON_9_0    -> "9.0"
+    ProtonVersion.PROTON_8_0    -> "8.0"
+    ProtonVersion.PROTON_7_0    -> "7.0"
+    ProtonVersion.WINE_GE_LATEST,
+    ProtonVersion.STOCK_WINE    -> null   // no version enforcement for these
+}
+```
+
+The installed version is found by matching `profile.verName.contains(pattern)` on the
+`ContentsManager` proton profiles. Container wineVersion is `"proton-" + profile.verName`
+(lowercase, no verCode suffix — e.g. `"proton-9.0-arm64ec"`).
+
+---
+
+## KnownGameFixes — What You Must Set per Entry
+
+Every `GameFix` entry should declare ALL of the following where applicable:
+
+| Field | What it controls | Auto-enforced? |
+|---|---|---|
+| `protonVersion` | container.wineVersion at launch | ✅ Yes — ContainerUtils |
+| `dxVersion` | DXVK vs VKD3D wrapper | ✅ Yes — recommender + applyGameConfig |
+| `extraEnvVars` | WINEDLLOVERRIDES, DXVK_ASYNC, etc. | ✅ Yes — always last in applyGameConfig |
+| `launchArgs` | GN_WINE_LAUNCH_ARGS | ✅ Yes — always last in applyGameConfig |
+| `forceUseLegacyDrm` | bypasses ColdClientLoader | ✅ Yes — LaunchOrchestrator |
+| `gameExePath` | override launched .exe | ✅ Yes — XServerScreen |
+| `requiresD8VK` | d8vk (OpenGL DXVK backend) | ✅ Yes — recommender |
+| `reason` | explains why — required for future maintenance | ❌ No (string comment) |
+
+**Never leave `reason` empty.** Future contributors must understand why a fix exists.
+
+---
+
+## The "Recommended" Button
+
+The Recommended button in the Game Settings screen resets `GameConfig` for the game by:
+1. Deleting the stored `filesDir/game_config/{appId}.json`
+2. Calling `LaunchOrchestrator.resolveGameConfig(saveIfFromRecommender = true)`
+3. Displaying the updated settings
+
+This re-runs the full recommender pipeline (EXE scan → engine detect → hardware profile →
+KnownGameFixes merge), so the user always gets the current best settings including any new
+fixes.
+
+**The Recommended button MUST NOT:**
+- Reset `GameProfileOverrides` (user's manual version picker choice, framerate cap, etc.)
+- Reset container-level settings that are not owned by `GameConfig` (drives, audio driver)
+
+---
+
+## Hardware-Aware Recommendations
+
+`GameConfigRecommender.recommend()` takes a `HardwareProfile` (GPU tier, RAM, core count) and
+a `ProtonTier` (Platinum/Gold/Silver from the CompatibilityDB) as inputs. For games **not** in
+`KnownGameFixes`, the recommender chooses:
+
+- `protonVersion` from ProtonTier: Platinum → 10.0, Gold → 9.0, Silver → 9.0, Bronze → 8.0
+- `fpsLimit` from thermal headroom (high-end device → 60, mid-range → 45, budget → 30)
+- `resolutionScale` from GPU tier (flagship → 1.0, mid → 0.75, budget → 0.5)
+- `dxvkNumCompilerThreads` from CPU core count (≥ 8 cores → 4, else 2)
+
+For games **in** `KnownGameFixes`, `protonVersion` and `extraEnvVars` always override the
+hardware-based defaults (layer stack #2 and #6 above).
+
+---
+
+## DO NOTs
+
+- **Do NOT** let a new container be created with `PrefManager.wineVersion` as the Wine binary
+  when a `KnownGameFix.protonVersion` is set for that game. The first-run container must get
+  the required version immediately.
+- **Do NOT** make `resolveKnownFixWineVersion` block the UI thread with heavy I/O. It calls
+  `ContentsManager.syncContents()` which is fast (in-memory after first sync) but should be
+  called off the main thread (it already is — `getOrCreateContainer` is called from coroutines
+  in XServerScreen).
+- **Do NOT** save the in-memory KnownGameFix protonVersion override back to `GameConfigStore`
+  in `resolveGameConfig`. We only update in-memory so the UI is accurate; writing back would
+  silently overwrite a user's intentional saved setting.
+- **Do NOT** skip the KnownGameFix container migration for games that already have a user
+  `GameProfileOverrides.compatibilityLayerVersionId` set. The user override wins (#7 in the
+  stack), so it's fine to apply the fix first and let the override clobber it afterward.
+- **Do NOT** call `ContainerUtils.deleteContainer()` automatically when a protonVersion
+  mismatch is detected. Deleting the container clears the entire Wine prefix (saves, config,
+  registry). Migrate `wineVersion` in-place instead — the Wine prefix itself is still valid.
+
+---
+
+## Testing Checklist for New KnownGameFix Entries
+
+- [ ] Game boots on first install (new container) → correct Proton version used immediately
+- [ ] Game boots after a fix is updated (existing container has wrong version) → auto-migrated
+- [ ] User manually picks a different Proton version via version picker → user choice sticks
+- [ ] User presses "Recommended" button → reverts to fix's protonVersion
+- [ ] extraEnvVars (WINEDLLOVERRIDES etc.) appear in Logcat `GameLaunch` tag at launch
+- [ ] `reason` field explains the root cause in sufficient detail for a new contributor
