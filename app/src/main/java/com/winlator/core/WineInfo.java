@@ -154,7 +154,20 @@ public class WineInfo implements Parcelable {
         ContentProfile wineProfile = contentsManager.getProfileByEntryName(identifier);
 
         if (wineProfile != null && (wineProfile.type == ContentProfile.ContentType.CONTENT_TYPE_WINE || wineProfile.type == ContentProfile.ContentType.CONTENT_TYPE_PROTON)) {
-            identifier = identifier.substring(0, identifier.length() - 2).toLowerCase();
+            // Strip a trailing numeric verCode suffix (e.g. "-1", "-12") produced by
+            // ContentsManager.getEntryName() when the caller passed a full entry name.
+            // Do NOT strip blindly by length — that breaks "arm64ec" by removing "ec".
+            int lastDash = identifier.lastIndexOf('-');
+            if (lastDash > 0) {
+                String tail = identifier.substring(lastDash + 1);
+                if (tail.matches("[0-9]+")) {
+                    identifier = identifier.substring(0, lastDash).toLowerCase();
+                } else {
+                    identifier = identifier.toLowerCase();
+                }
+            } else {
+                identifier = identifier.toLowerCase();
+            }
         }
 
         Matcher matcher = pattern.matcher(identifier);

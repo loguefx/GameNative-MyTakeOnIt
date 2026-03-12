@@ -294,6 +294,13 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
 
         command += " --bind=/proc";
         command += " --bind=/sys";
+        // Proot's --rootfs path translation is unreliable for /etc on Android (SELinux blocks
+        // ptrace-based interception of /etc syscalls). Adding an explicit bind mount ensures
+        // /etc/machine-id is visible to Wine for stable rsaenh HMAC key derivation.
+        File machineIdSrc = new File(rootDir, "etc/machine-id");
+        if (machineIdSrc.exists()) {
+            command += " --bind=" + machineIdSrc.getAbsolutePath() + ":/etc/machine-id";
+        }
 
         if (bindingPaths != null) {
             for (String path : bindingPaths)
@@ -465,6 +472,10 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         }
         command += " --bind=/proc";
         command += " --bind=/sys";
+        File machineIdSrcOut = new File(rootDir, "etc/machine-id");
+        if (machineIdSrcOut.exists()) {
+            command += " --bind=" + machineIdSrcOut.getAbsolutePath() + ":/etc/machine-id";
+        }
         if (bindingPaths != null) {
             for (String path : bindingPaths)
                 command += " --bind=\"" + (new File(path)).getAbsolutePath() + "\"";
@@ -533,6 +544,10 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         }
         command += " --bind=/proc";
         command += " --bind=/sys";
+        File machineIdSrcIn = new File(rootDir, "etc/machine-id");
+        if (machineIdSrcIn.exists()) {
+            command += " --bind=" + machineIdSrcIn.getAbsolutePath() + ":/etc/machine-id";
+        }
         if (bindingPaths != null) {
             for (String path : bindingPaths)
                 command += " --bind=\"" + (new File(path)).getAbsolutePath() + "\"";

@@ -4,6 +4,7 @@ import android.content.Context
 import app.gamenative.config.ConfigPreset
 import app.gamenative.config.DxVersion
 import app.gamenative.config.GameConfig
+import app.gamenative.config.KnownGameFixes
 import app.gamenative.config.ProtonVersion
 import app.gamenative.profile.WineRuntime
 import kotlinx.coroutines.Dispatchers
@@ -72,7 +73,35 @@ object CrashRecoveryManager {
     suspend fun recordExit(context: Context, appId: String, exitCode: Int, playDurationMs: Long) =
         withContext(Dispatchers.IO) {
             val playSeconds = playDurationMs / 1000L
-            val isCrash = exitCode != 0 || playSeconds < MIN_PLAY_SECONDS
+
+            // Exit code 137 = SIGKILL (128 + 9).  This is always an external kill from Android's
+            // OOM manager or process lifecycle — never a game bug.  Counting it as a crash would
+            // incorrectly downgrade config for games running fine but starved of RAM by the OS.
+            val isAndroidOomKill = exitCode == 137
+
+            // Games in KnownGameFixes have been hand-tuned with specific Proton/DX/env settings.
+            // Auto-downgrading their config (e.g. from Proton 10 to Proton 8) would undo those
+            // fixes and is almost certain to make things worse, not better.  The known-fix env
+            // vars (layer 6) are always re-applied last, but the config fields (protonVersion,
+            // dxVersion, dxvkEnabled) would still be corrupted by the recovery step.
+            val steamId = appId.removePrefix("STEAM_").toIntOrNull() ?: -1
+            val hasKnownFix = KnownGameFixes.get(steamId) != null
+            if (hasKnownFix) {
+                Timber.tag("CrashRecovery").d(
+                    "Skipping crash recovery for appId=$appId — KnownGameFix present " +
+                        "(exitCode=$exitCode playSeconds=$playSeconds). " +
+                        "Fix settings are already optimal; auto-downgrade would revert intentional overrides.",
+                )
+                return@withContext
+            }
+
+            val isCrash = !isAndroidOomKill && (exitCode != 0 || playSeconds < MIN_PLAY_SECONDS)
+            if (isAndroidOomKill) {
+                Timber.tag("CrashRecovery").w(
+                    "OOM-kill (status=137) for appId=$appId after ${playSeconds}s — " +
+                        "skipping crash count increment (this is Android killing the process, not a game bug).",
+                )
+            }
 
             val history = loadHistory(context, appId) ?: CrashHistory(appId)
             val updated = if (isCrash) {

@@ -139,10 +139,11 @@ object ManifestRepository {
         }
 
         fun protonVersionPattern(version: ProtonVersion): String? = when (version) {
-            ProtonVersion.PROTON_10_0 -> "10.0"
-            ProtonVersion.PROTON_9_0 -> "9.0"
-            ProtonVersion.PROTON_8_0 -> "8.0"
-            ProtonVersion.PROTON_7_0 -> "7.0"
+            ProtonVersion.PROTON_10_0       -> "10.0"
+            ProtonVersion.PROTON_9_0        -> "9.0"
+            ProtonVersion.PROTON_9_0_X86_64 -> "9.0-x86_64"
+            ProtonVersion.PROTON_8_0        -> "8.0"
+            ProtonVersion.PROTON_7_0        -> "7.0"
             ProtonVersion.WINE_GE_LATEST, ProtonVersion.STOCK_WINE -> null
         }
 

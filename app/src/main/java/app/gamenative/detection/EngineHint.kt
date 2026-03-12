@@ -56,6 +56,21 @@ enum class EngineHint(
         preferredProton = ProtonVersion.PROTON_9_0,
         defaultDxVersion = app.gamenative.config.DxVersion.DX12,
     ),
+    /**
+     * Unreal Engine 3 — DX9, 32-bit executables, typically ships CookedPC/ content.
+     * Covers BioShock series, Mirror's Edge, Batman Arkham series, Mass Effect 1-3,
+     * Borderlands 1, Dishonored, and hundreds of 2007-2014 era UE3 titles.
+     *
+     * Proton 10.0: winex11.drv connects reliably to the Winlator abstract X socket.
+     * Proton 9.0: winex11.drv fails to load on Adreno (display-driver incompatibility).
+     *
+     * DX9 default: UE3 supports DX10/DX11 on PC but shipped games overwhelmingly use
+     * the DX9 rendering path. The EXE scan will upgrade to DX11 if d3d11.dll is imported.
+     */
+    UNREAL_3(
+        preferredProton  = ProtonVersion.PROTON_10_0,
+        defaultDxVersion = app.gamenative.config.DxVersion.DX9,
+    ),
     /** Valve Source engine — DX9, excellent Wine compat. */
     SOURCE(
         preferredProton = ProtonVersion.PROTON_10_0,

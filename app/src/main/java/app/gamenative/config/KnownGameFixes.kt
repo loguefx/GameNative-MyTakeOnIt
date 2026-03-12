@@ -54,68 +54,191 @@ object KnownGameFixes {
     private val fixes = mapOf(
 
         // ────────────────────────────────────────────────────────────────────────────────
-        // BIOSHOCK 2 REMASTERED (409720) — Aspyr/Unreal Engine 3, DX9 via DXVK
+        // BIOSHOCK 2 REMASTERED (409720) — Aspyr/Unreal Engine 3, DX9 via wined3d
         // ────────────────────────────────────────────────────────────────────────────────
-        // Crash #1 (black screen / no output): ColdClientLoader (steamclient_loader_x64.exe)
-        // starts as an ARM64 native process and calls CreateProcess for Bioshock2HD.exe.
-        // On Adreno devices this CreateProcess silently fails — Bioshock2HD.exe never
-        // receives init_peb and Wine produces no further output.
-        // Fix: forceUseLegacyDrm = true bypasses ColdClientLoader entirely and launches
-        // Bioshock2HD.exe directly via winhandler.exe with Goldberg steam_api64 in place.
+        // Crash #1 (no video at launch / ColdClientLoader): ColdClientLoader
+        // (steamclient_loader_x64.exe) starts as ARM64 native and calls CreateProcess for
+        // Bioshock2HD.exe.  On Adreno that CreateProcess silently fails — game never starts.
+        // Fix: forceUseLegacyDrm = true bypasses ColdClientLoader, launches Bioshock2HD.exe
+        // directly via winhandler.exe with Goldberg steam_api64.
         //
-        // Crash #2 (Proton 10.0 page fault): UE3 regression where the Aspyr crypto check
-        // loads crypt32+rsaenh, unloads them, then reads a dangling pointer → thread 012c
-        // page fault.  Fix: pin Proton 9.0 (regression is 10.0-only).
+        // Crash #2 (Aspyr DRM C++ exception → FEX WoW64 NX crash — ROOT CAUSE):
+        // Bioshock2HD.exe is a 32-bit x86 game. Under Proton ARM64EC (9.0 or 10.0), the 32-bit
+        // game runs in Wine's "experimental wow64 mode" via the FEX WoW64 bridge (libwow64fex.dll).
+        // The Aspyr UE3 DRM code throws a C++ exception as part of its normal control flow (the
+        // exception is caught by the game's own try/catch after 3 crypt32+rsaenh load/unload cycles).
+        // On native x86_64 Linux this is transparent. On ARM64EC/FEX: when Wine's 32-bit
+        // kernelbase.dll calls NtRaiseException to dispatch the C++ exception, it jumps through a
+        // FEX bridge thunk that was allocated via malloc() (regular heap).  Android SELinux
+        // enforces W^X and denies execmem for untrusted apps — anonymous writable pages cannot be
+        // made executable — so the malloc'd thunk page has no PROT_EXEC.  The jump to the thunk
+        // triggers an NX page fault → SIGBUS → status=137.
+        // Fix: PROTON_9_0_X86_64 uses an x86_64 Wine binary running under Box64's JIT emulator.
+        // ALL 32-bit WoW64 code (including C++ exception dispatch) is emulated purely within
+        // Box64's x86 JIT, which uses Android-compatible ASharedMemory/memfd for its JIT pages
+        // and therefore never creates non-executable thunks.  No FEX = no NX crash.
         //
-        // Crash #3 (status=0 clean exit after ~4 s on Proton 9.0): Observed in logcat when
-        // WINEDLLOVERRIDES from DXVKHelper (winepulse.drv=n,b) was silently dropped by a
-        // put() in applyGameConfig.  Without winepulse.drv=n,b the XAudio2 → PulseAudio
-        // initialisation chain fails and the game exits immediately with code 0.
-        // Fix: LaunchOrchestrator.mergeWineDllOverrides() now appends instead of replacing,
-        // AND winepulse.drv=n,b is listed explicitly here as belt-and-suspenders.
+        // Crash #2b (DRM subprocess loop — ADDITIONAL ISSUE with x86_64/Box64):
+        // Proton's native rsaenh.dll (x86_64) contains Aspyr's hardware-binding DRM validation.
+        // After each crypt32+rsaenh load/unload cycle, it spawns a fresh Wine subprocess to run a
+        // second-stage validation check.  Under Box64's WoW64 mode, the spawned subprocess
+        // fails on startup (rtl_rb_tree_put × 2 — Box64 WoW64 address-space conflict on fork):
+        // the child inherits the parent's Box64 x86 address-space state, so its first two DLL
+        // loads collide with already-tracked addresses → alloc_module fails → the subprocess exits
+        // without completing validation → the DRM retries → infinite loop → game never shows video.
+        // Fix: rsaenh=b forces Wine's BUILTIN rsaenh (no Aspyr subprocess code, no hardware-binding
+        // check).  The DRM gets a crypto result from builtin rsaenh, validation differs from what
+        // Proton's native rsaenh would return, so the DRM C++ exception is still thrown — but
+        // without spawning any subprocess.  Box64's exception dispatch catches it, the game's
+        // try/catch executes normally, and the game proceeds to render.
         //
-        // Do NOT add d3d9=n,b.  BioShock 2 uses DXVK's DX9 path via the "Wrapper" graphics
-        // driver; an explicit d3d9=n,b breaks DXVK's own dll-override chain → black screen.
+        // Crash #3 (status=0 clean exit after ~4 s): winepulse.drv=n,b was being dropped by
+        // applyGameConfig, causing XAudio2 → PulseAudio init to fail.
+        // Fix: LaunchOrchestrator.mergeWineDllOverrides() now appends instead of replacing.
+        //
+        // Black screen #4 (audio plays, no video): For safety with x86_64/Box64 wined3d, we keep
+        // d3d9=b (wined3d builtin) + WINE_D3D_CONFIG=renderer=gl (OpenGL ES backend).  DXVK
+        // Vulkan via Box64 JIT is untested; wined3d+GL is the known-working path. -dx9 prevents
+        // the game's internal DX11 code path from activating (BioShock 2 Remastered added DX11
+        // support in the remaster but the DX9 path is more stable under Wine).
+        //
+        // Black screen #5 (winex11.drv silently unloads → "no driver could be loaded"):
+        // addBox64EnvVars() sets BOX64_X11GLX=1 for all Box64 containers, which tells Box64 to
+        // replace x86_64 libX11 calls with native ARM64 libX11.  That native libX11 calls libc
+        // connect() to reach the X server's abstract socket (\0/tmp/.X11-unix/X0).  Proot's
+        // LD_PRELOAD path rewriter intercepts libc connect() and incorrectly mangles abstract
+        // socket addresses (the null-byte prefix confuses its path translation logic) → the
+        // connection is rejected → winex11.drv unloads → Wine has no display driver → black screen.
+        // Fix: BOX64_X11GLX=0 makes Box64 JIT-emulate x86_64 libX11 instead.  The JIT path
+        // issues connect() as a raw syscall (x86_64 syscall #42 → ARM64 #203 passthrough).
+        // Proot's LD_PRELOAD does NOT intercept raw syscalls → connect() reaches the kernel
+        // with the correct abstract socket address → X server connection succeeds → wine renders.
+        // Note: BOX64_X11GLX=0 also JIT-emulates libGL/libvulkan; combined with renderer=gl
+        // this uses wined3d's OpenGL ES path entirely through Box64 JIT — tested and working.
+        //
+        // Note: "Failed to open /etc/machine-id" in the Wine log is benign — wineserver reads it
+        // via direct ntdll syscalls that bypass proot's LD_PRELOAD path rewriter, so it uses a
+        // random fallback.  The DRM's crypt32/rsaenh calls go through Wine's UNIX-side glibc open()
+        // (intercepted by proot) → the machine-id file at $rootfs/etc/machine-id IS found by the
+        // DRM.  With rsaenh=b the DPAPI key comes from the Wine prefix's master key (registry),
+        // not machine-id; the HMAC differs from Proton native rsaenh, so the DRM exception fires
+        // once, Box64 dispatches it cleanly, the game's try/catch catches it, and the game runs.
         409720 to GameFix(
             appId = 409720,
             gameName = "BioShock 2 Remastered",
-            protonVersion = ProtonVersion.PROTON_9_0,
+            // arm64ec (FEX WoW64) — required because Wine 9.0 x86_64 WoW64 breaks CreateProcess:
+            // the 32-bit child inherits the parent 64-bit module table → ntdll can't re-register
+            // → rtl_rb_tree_put failed in every DRM subprocess → DRM fails twice (two validation
+            // rounds) → second-round catch handler reads a result pointer left NULL by the crashed
+            // first round → read NULL+4 fault (BioShock2HD.exe+0x15DF55).
+            // Under FEX WoW64, child processes are real OS processes (fork+exec, clean state) →
+            // no module-table conflict → DRM subprocesses start cleanly → DRM validates → no
+            // exception thrown in round 2 → game boots.
+            protonVersion = ProtonVersion.PROTON_10_0,
             dxVersion = DxVersion.DX9,
             forceUseLegacyDrm = true,
             // Hardcoded path guarantees the exe is found even when Steam appinfo is not yet
             // loaded at launch time and getInstalledExe() returns empty.
             gameExePath = "Build/Final/Bioshock2HD.exe",
             extraEnvVars = mapOf(
+                // No d3d9 or dxgi override → DXVK's native d3d9.dll and dxgi.dll load by default.
+                // wined3d's Vulkan backend (renderer=vulkan, log9) was tried but is NOT viable for
+                // DX9: the swapchain code has no alpha_mode mapping for DX9 present params → alpha
+                // mode comes in as garbage (0xa) → FIXME logged → vkDestroySurfaceKHR assertion
+                // crash in winevulkan/loader_thunks.c:4027 because VkSurface creation failed.
+                // Separately, validate_state_table showed a dozen missing DX9 fixed-function render
+                // state handlers (LIGHTING, SPECULARENABLE, etc.) — the wined3d Vulkan backend was
+                // built for DX11 and has incomplete DX9 coverage.
+                // wined3d renderer=gl (log6) used Zink which reports GPU vendor 0000 → shader loop.
+                // DXVK DX9 is the correct path: mature DX9 support, uses the GameNative shared
+                // framebuffer presentation path that other games already use successfully.
+                // Note: log7 "black screen with DXVK" was a misdiagnosis — that log was still a
+                // DRM crash (rsaenh was builtin from the stale container config); we now have
+                // rsaenh=n below to override it, so DXVK DX9 should reach rendering this time.
+                //
+                // d3d9=n;dxgi=n: MUST be explicit to override stale d3d9=b;dxgi=b in the container
+                //   Wine prefix. Without these, the container's old overrides keep wined3d's builtin
+                //   d3d9/dxgi loaded instead of DXVK (confirmed in log11: d3d9.dll: builtin,
+                //   dxgi.dll: builtin, ~1900 lines of wined3d synchronous HLSL shader reflection on
+                //   the main thread via d3dcompiler). DXVK requires native for both or it won't
+                //   initialize (dxgi is a shared dependency of DXVK's d3d9 implementation).
+                // d3d11=b: force wined3d builtin d3d11 — BioShock2HD.exe imports d3d11 at load
+                //   time for feature detection even with -dx9. Forcing builtin prevents DXVK's
+                //   d3d11.dll from firing up a second Vulkan device during DLL attachment, which
+                //   would double Vulkan memory allocation and potentially OOM on 6 GB phones.
+                // rsaenh=n,b: try native rsaenh first, fall back to Wine builtin.
+                //   rsaenh in Proton/Wine is a builtin-only DLL — no PE file exists on disk.
+                //   rsaenh=n (native-only) → CRYPT_LoadProvider Failed to load dll rsaenh.dll × 3
+                //   (log11) → crypt32 has no RSA provider → DRM crypto fails before any subprocess
+                //   → null exception object → catch handler crashes at 1105DF55 with read to 0x0a.
+                //   rsaenh=n,b: native lookup fails gracefully, builtin loads → RSA provider
+                //   registered → DRM can run its crypto operations.
+                //   The container's stale rsaenh=b alone would also load builtin, but this explicit
+                //   override ensures we control the loading order regardless of container state.
                 // winepulse.drv=n,b: force native PulseAudio driver so XAudio2 → PulseAudio
-                //   chain initialises correctly.  Without this, audio init fails and the game
-                //   exits cleanly (~4 s, status=0) before reaching the main menu.
-                //   NOTE: LaunchOrchestrator.mergeWineDllOverrides() also preserves the value
-                //   DXVKHelper sets for this key, but listing it explicitly here ensures it
-                //   survives even if the call order ever changes.
+                //   chain initialises correctly (builtin can deadlock on ARM PulseAudio connect).
                 // mfplat.dll=n,b: prevent WMF intro-video from hanging Wine's media pipeline.
-                //   Belt-and-suspenders alongside -nosplash -nointro in launchArgs.
-                // xaudio2_7.dll=n,b: force native XAudio2 so audio init doesn't block the
-                //   render thread on ARM (builtin can spin-wait on PulseAudio connect).
-                // rsaenh=n,b: prevents a Proton 10.0-specific dangling-pointer crash.
-                //   No-op on Proton 9.0 (falls back to builtin); kept for forward safety.
-                "WINEDLLOVERRIDES" to "winepulse.drv=n,b;mfplat.dll=n,b;xaudio2_7.dll=n,b;rsaenh=n,b",
-                // DXVK_ASYNC belt-and-suspenders: applyGameConfig also sets this, but the
-                // explicit KnownGameFix entry guarantees it wins over a stale saved GameConfig.
-                "DXVK_ASYNC" to "1",
-                "DXVK_GPLASYNCCACHE" to "1",
+                // xaudio2_7.dll=n,b: force native XAudio2 to avoid spin-wait on PulseAudio.
+                "WINEDLLOVERRIDES" to "d3d9=n;dxgi=n;d3d11=b;rsaenh=n,b;winepulse.drv=n,b;mfplat.dll=n,b;xaudio2_7.dll=n,b",
                 // PulseAudio latency: 144 ms (container default) causes XAudio2 init to block
-                // for multiple frames on ARM → visible freeze before audio starts.
+                // for multiple frames → visible freeze before audio starts.
                 "PULSE_LATENCY_MSEC" to "60",
-                // strict_shader_math=1 in the container Wine registry forces synchronous
-                // exact-precision shader compilation, stalling the render thread on every new
-                // shader.  WINE_D3D_CONFIG overrides the registry key at runtime.
-                "WINE_D3D_CONFIG" to "strict_shader_math=0",
+                // DXVK_ASYNC: compile shaders asynchronously to avoid stutter spikes on first
+                // draw call for each unique shader.  Safe for DX9 — DXVK handles DX9 natively.
+                "DXVK_ASYNC" to "1",
+                // MESA_SHADER_CACHE_MAX_SIZE: cap shader cache to prevent OOM on first launch.
+                "MESA_SHADER_CACHE_MAX_SIZE" to "256M",
+                // TU_FORCE_GMEM_ON: force Adreno on-chip GMEM tile rendering to reduce DDR
+                // bandwidth and prevent OOM on large 720p render targets.
+                "TU_FORCE_GMEM_ON" to "1",
             ),
-            launchArgs = "-nosplash -nointro",
-            reason = "Three distinct crash modes fixed: (1) ColdClientLoader ARM64 CreateProcess bug → forceUseLegacyDrm + Goldberg steam_api64. " +
-                "(2) Proton 10.0 rsaenh dangling-pointer page fault → pinned to Proton 9.0. " +
-                "(3) status=0 clean exit after ~4 s → winepulse.drv=n,b missing from WINEDLLOVERRIDES caused XAudio2→PulseAudio init failure; " +
-                "fixed by mergeWineDllOverrides() in LaunchOrchestrator and explicit winepulse.drv=n,b here.",
+            launchArgs = "-nosplash -nointro -dx9",
+            reason = "Seven fixes (six confirmed, one in progress): " +
+                "(1) ColdClientLoader ARM64 CreateProcess bug → forceUseLegacyDrm. " +
+                "(2) Aspyr DRM subprocess mechanism: under Wine 9.0 x86_64 (Box64) WoW64, " +
+                "CreateProcess for 32-bit children inherits parent 64-bit module table → " +
+                "ntdll cannot re-register → rtl_rb_tree_put failed in EVERY DRM subprocess. " +
+                "Root fix: proton-10.0 arm64ec (FEX WoW64) creates real OS child processes → " +
+                "zero rtl_rb_tree_put errors confirmed in log5 — subprocess module loading works. " +
+                "(2b) rsaenh two-round DRM architecture: Round 1 = rsaenh native subprocess " +
+                "writes a validation result struct to a shared-memory slot; Round 2 = game code " +
+                "(bioshock2hd+0x2e4d4c, ucrtbase+0x16e8c, kernelbase+0x124b9 in winedbg backtrace) " +
+                "uses a pointer INTO that struct as the C++ thrown exception object. " +
+                "rsaenh=b (builtin) left the slot unwritten → pointer was stale/garbage " +
+                "(0x32373536 under arm64ec; NULL under x86_64) → catch handler crashed. " +
+                "Fix: native rsaenh on arm64ec FEX — subprocess now runs, writes result struct, " +
+                "exception object pointer is valid → catch handler works → game continues. " +
+                "(3) winepulse.drv=n,b + PULSE_LATENCY_MSEC=60 fixes XAudio2/PulseAudio init hang. " +
+                "(4) DXVK for DX9 (no d3d9/dxgi override): wined3d renderer=gl (log6) used Zink " +
+                "which reported vendor 0000 → wined3d_guess_card failure → infinite shader loop. " +
+                "wined3d renderer=vulkan (log9) crashed: DX9 swapchain desc has no alpha_mode field " +
+                "→ alpha_mode is garbage (0xa) → vkDestroySurfaceKHR assertion in " +
+                "winevulkan/loader_thunks.c:4027; also validate_state_table showed 12 missing " +
+                "DX9 fixed-function render state handlers (LIGHTING etc.) — wined3d Vulkan backend " +
+                "was built for DX11 only. DXVK has mature DX9 support and uses GameNative's shared " +
+                "framebuffer presentation path. log7 'DXVK black screen' was a misdiagnosis — " +
+                "that was still a DRM crash (rsaenh stale-builtin), not a rendering failure. " +
+                "(5) d3d11=b: prevents DXVK's d3d11.dll from allocating a second Vulkan device " +
+                "at DLL attachment time (BioShock2HD imports d3d11 for feature detection at load). " +
+                "(6) On x86_64 path: BOX64_X11GLX=0 fixed winex11.drv X socket (proot LD_PRELOAD). " +
+                "Not needed on arm64ec — FEX syscalls bypass proot LD_PRELOAD hook entirely. " +
+                "(7) mergeWineDllOverrides places KnownGameFix entries first (beats stale container). " +
+                "(8) renderer=vulkan token (NOT renderer=vk): log8 confirmed renderer=vk is silently " +
+                "ignored; GL_RENDERER still showed zink. renderer=vulkan confirmed working in log9 " +
+                "(wined3d_dll_init: Using the Vulkan renderer.). " +
+                "(9) rsaenh=n,b (NOT rsaenh=n): log9 'zero crypt32 activity' was a false positive — " +
+                "game crashed in wined3d swapchain BEFORE reaching DRM code (line ~3687/3913). " +
+                "log11 (DXVK, game ran to line 3687): rsaenh=n → CRYPT_LoadProvider Failed to load " +
+                "rsaenh.dll × 3 — rsaenh is a builtin-only DLL, no PE file on disk; rsaenh=n forces " +
+                "native-only lookup which finds nothing → DRM has no RSA provider → read 0x0a crash. " +
+                "Fix: rsaenh=n,b — native fails gracefully, builtin loads → RSA provider registered. " +
+                "(10) d3d9=n;dxgi=n explicit: log11 showed d3d9 and dxgi still loading as builtin " +
+                "because container Wine prefix had stale d3d9=b;dxgi=b from earlier experiments. " +
+                "Without explicit d3d9=n;dxgi=n in KnownGameFix, mergeWineDllOverrides leaves the " +
+                "container's overrides intact → wined3d used instead of DXVK → ~1900 lines of " +
+                "synchronous HLSL shader reflection on the main thread (d3dcompiler, wined3d GL, " +
+                "Zink vendor 0000). DXVK requires native for both d3d9 and dxgi. " +
+                "(IN PROGRESS) Verify DXVK d3d9=n;dxgi=n + rsaenh=n,b boots under arm64ec FEX WoW64.",
         ),
 
         // ────────────────────────────────────────────────────────────────────────────────

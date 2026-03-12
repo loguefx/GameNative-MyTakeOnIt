@@ -404,23 +404,55 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         }
 
         Log.d("GameLaunch", "About to exec: WINEDEBUG in env=[" + envVars.get("WINEDEBUG") + "]");
+        final long launchWallTimeMs = System.currentTimeMillis();
         int guestPid = ProcessHelper.exec(cmdarray, envVars.toStringArray(), workingDir != null ? workingDir : rootDir, (status) -> {
+            long sessionDurationMs = System.currentTimeMillis() - launchWallTimeMs;
             Log.w("GameLaunch", "=== Guest exit callback: status=" + status + " (0=ok, non-zero=crash). Wine log dump below. ===");
             if (status == -1) {
                 Log.e("GameLaunch", "Guest process failed to start (exec threw or process could not be spawned)");
             }
+            // Short-session detection: if the entire Wine session lasted <15 s and exited cleanly,
+            // the game almost certainly crashed during its own initialization (DXVK Vulkan failure,
+            // missing DLL, FEX emulation bug, etc.).  This always shows up as status=0 because
+            // explorer.exe returns 0 even when a child process crashes.
+            if (sessionDurationMs < 15_000) {
+                Log.e("GameLaunch",
+                    "SHORT SESSION (" + sessionDurationMs + " ms, status=" + status + "): " +
+                    "game exited during init. Likely cause: DXVK Vulkan failure, missing DLL, or " +
+                    "FEX emulation crash. DXVK errors now appear in wine_output.log above (look for " +
+                    "'DXVK:' lines). For full DLL-load trace: Settings → Debug → enable Wine Debug " +
+                    "(channels: warn,err,loaddll), relaunch, share wine_debug.log from " +
+                    "Android/data/app.gamenative/files/wine_logs/wine_debug.log");
+            }
             // Dump Wine log file to logcat so we have debug output even when process streams closed early
             if (wineLogFileForCallback != null && wineLogFileForCallback.exists()) {
-                try (BufferedReader r = new BufferedReader(new InputStreamReader(new java.io.FileInputStream(wineLogFileForCallback), java.nio.charset.StandardCharsets.UTF_8))) {
-                    String line;
-                    int count = 0;
-                    while ((line = r.readLine()) != null && count < 500) {
-                        Log.d("GameLaunch", "wine: " + line);
-                        count++;
+                try {
+                    // Read all lines into a ring buffer; dump the TAIL so the crash is always visible.
+                    final int MAX_TAIL = 600;
+                    java.util.ArrayDeque<String> tail = new java.util.ArrayDeque<>(MAX_TAIL + 1);
+                    int totalLines = 0;
+                    try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                            new java.io.FileInputStream(wineLogFileForCallback),
+                            java.nio.charset.StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = r.readLine()) != null) {
+                            totalLines++;
+                            tail.addLast(line);
+                            if (tail.size() > MAX_TAIL) tail.removeFirst();
+                        }
                     }
-                    if (count >= 500) Log.d("GameLaunch", "wine: (truncated after 500 lines)");
-                    if (count == 0) Log.w("GameLaunch", "Wine log file is empty (Wine/Proton may have exited before writing; check loader/crash before main)");
-                    Log.d("GameLaunch", "Wine log file path: " + wineLogFileForCallback.getAbsolutePath() + " (" + count + " lines)");
+                    if (totalLines == 0) {
+                        Log.w("GameLaunch", "Wine log file is empty (Wine/Proton may have exited before writing; check loader/crash before main)");
+                    } else {
+                        int skipped = totalLines - tail.size();
+                        if (skipped > 0) {
+                            Log.d("GameLaunch", "wine: --- (skipping first " + skipped + " lines; showing last " + tail.size() + " of " + totalLines + ") ---");
+                        }
+                        for (String line : tail) {
+                            Log.d("GameLaunch", "wine: " + line);
+                        }
+                    }
+                    Log.d("GameLaunch", "Wine log file path: " + wineLogFileForCallback.getAbsolutePath() + " (" + totalLines + " lines total)");
                 } catch (IOException e) {
                     Log.e("GameLaunch", "Could not read Wine log file: " + e.getMessage());
                 }

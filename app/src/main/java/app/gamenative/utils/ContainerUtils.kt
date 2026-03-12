@@ -8,6 +8,7 @@ import app.gamenative.service.SteamService
 import app.gamenative.service.epic.EpicService
 import app.gamenative.service.gog.GOGConstants
 import app.gamenative.service.gog.GOGService
+import app.gamenative.config.DxVersion
 import app.gamenative.config.KnownGameFixes
 import app.gamenative.config.ProtonVersion
 import app.gamenative.profile.GameProfileOverrides
@@ -618,6 +619,51 @@ object ContainerUtils {
     }
 
     /**
+     * Ensures /etc/machine-id exists in the container's Linux rootfs.
+     *
+     * Wine's rsaenh.dll uses /etc/machine-id as an entropy source for HMAC key derivation when
+     * processing DRM license challenges.  On Android, /etc/machine-id does not exist by default.
+     * Without it, rsaenh produces a different HMAC output than the game expects → the DRM check
+     * fails → the game's Aspyr DRM code throws a C++ exception that signals "retry".
+     *
+     * The exception is normally caught by a try/catch in the game binary.  On ARM64EC WoW64
+     * (FEX bridge), the C++ exception dispatch fails to find the catch block and instead executes
+     * garbage code → page fault → crash (the "page fault on execute access to 0x045f1230" crash
+     * seen in BioShock 2 Remastered after 3 crypt32+rsaenh load/unload cycles).
+     *
+     * The machine-id must be stable across launches so rsaenh consistently produces the same
+     * HMAC output.  A random UUID generated once and written here is sufficient; the exact value
+     * is not validated against any server, only used as a local hash key.
+     *
+     * Format: 32 hex chars, no dashes, followed by a newline — matches the real Linux format.
+     */
+    fun ensureMachineId(context: Context) {
+        val rootDir = com.winlator.xenvironment.ImageFs.find(context).rootDir
+        val machineIdFile = File(rootDir, "etc/machine-id")
+        try {
+            if (machineIdFile.exists() && machineIdFile.length() >= 32) return
+            machineIdFile.parentFile?.mkdirs()
+            // Use Android ID (stable per-device per-app) as the seed, padded/hashed to 32 hex chars.
+            // android.provider.Settings.Secure.ANDROID_ID is stable until a factory reset,
+            // which is the same lifetime guarantee as a real /etc/machine-id.
+            val androidId = try {
+                android.provider.Settings.Secure.getString(
+                    context.contentResolver,
+                    android.provider.Settings.Secure.ANDROID_ID,
+                ) ?: "gamenative00000000000000"
+            } catch (_: Exception) { "gamenative00000000000000" }
+            // Hash the Android ID to produce exactly 32 lowercase hex characters.
+            val md = java.security.MessageDigest.getInstance("MD5")
+            val hash = md.digest(androidId.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            machineIdFile.writeText("$hash\n")
+            Timber.i("MachineId: created /etc/machine-id in container rootfs ($hash)")
+        } catch (e: Exception) {
+            Timber.w(e, "MachineId: could not write /etc/machine-id — rsaenh DRM checks may fail")
+        }
+    }
+
+    /**
      * After game launch, pin Wine process to P-cores (0xF0) inside the container.
      * Only runs for Bionic (proot) containers; Glibc runs on host so skipped.
      * Call from a background coroutine (e.g. viewModelScope.launch(Dispatchers.IO)).
@@ -963,10 +1009,14 @@ object ContainerUtils {
      * to a specific installed Proton build (Wine-GE, stock Wine).
      */
     private fun protonVersionToPattern(version: ProtonVersion): String? = when (version) {
-        ProtonVersion.PROTON_10_0  -> "10.0"
-        ProtonVersion.PROTON_9_0   -> "9.0"
-        ProtonVersion.PROTON_8_0   -> "8.0"
-        ProtonVersion.PROTON_7_0   -> "7.0"
+        ProtonVersion.PROTON_10_0      -> "10.0"
+        ProtonVersion.PROTON_9_0       -> "9.0"
+        // "9.0-x86_64" uniquely targets the x86_64 Box64 build (not arm64ec).
+        // Required for 32-bit games where FEX WoW64 exception dispatch crashes on Android
+        // (SELinux blocks execmem → FEX thunks in non-exec heap → SIGSEGV on call).
+        ProtonVersion.PROTON_9_0_X86_64 -> "9.0-x86_64"
+        ProtonVersion.PROTON_8_0       -> "8.0"
+        ProtonVersion.PROTON_7_0       -> "7.0"
         ProtonVersion.WINE_GE_LATEST, ProtonVersion.STOCK_WINE -> null
     }
 
@@ -996,8 +1046,12 @@ object ContainerUtils {
                 profile.verName?.contains(pattern) == true
             }
             if (profileMatch != null) {
-                Timber.d("resolveKnownFixWineVersion: using downloaded profile for $appId: proton-${profileMatch.verName}")
-                return "proton-${profileMatch.verName}"
+                // verName may already include the "proton-" prefix (e.g. "proton-10.0-arm64ec").
+                // Only prepend it when missing, so we never produce "proton-proton-10.0-arm64ec".
+                val verName = profileMatch.verName ?: return null
+                val versionId = if (verName.startsWith("proton-")) verName else "proton-$verName"
+                Timber.d("resolveKnownFixWineVersion: using downloaded profile for $appId: $versionId (raw verName=$verName)")
+                return versionId
             }
 
             // Pass 2: built-in bundled versions that ship inside the APK's imagefs /opt/ directory.
@@ -1048,6 +1102,35 @@ object ContainerUtils {
             result = result.copy(wineVersion = knownFixVersion)
         }
 
+        // Layer 2b: KnownGameFixes.dxVersion — auto-migrate dxwrapper so the correct DLL
+        // package (DXVK, VKD3D) is extracted into the Wine prefix before launch.
+        //
+        // Background: extractDXWrapperFiles() in XServerScreen only extracts DLLs when the
+        // container's dxwrapper string changes.  If dxwrapper was previously set to "wined3d"
+        // (e.g. by an earlier debugging experiment or a stale manual override), DXVK's
+        // d3d9.dll and dxgi.dll are never placed in system32/syswow64.  Setting
+        // WINEDLLOVERRIDES=d3d9=n then fails with "Library d3d9.dll not found" (log12).
+        //
+        // This layer mirrors the wineVersion migration in Layer 2: KnownGameFix.dxVersion is
+        // authoritative for which wrapper package the container uses.
+        if (extractGameSourceFromContainerId(appId) == GameSource.STEAM) {
+            try {
+                val steamId = extractGameIdFromContainerId(appId)
+                val fix = KnownGameFixes.get(steamId)
+                if (fix != null) {
+                    val requiredWrapper: String? = when (fix.dxVersion) {
+                        DxVersion.DX9, DxVersion.DX10, DxVersion.DX11 -> "dxvk-${DefaultVersion.DXVK}"
+                        DxVersion.DX12 -> "vkd3d-${DefaultVersion.VKD3D}"
+                        DxVersion.AUTO -> null
+                    }
+                    if (requiredWrapper != null && result.dxwrapper != requiredWrapper) {
+                        Timber.i("KnownGameFix: auto-migrating dxwrapper '${result.dxwrapper}' → '$requiredWrapper' for $appId (${fix.dxVersion})")
+                        result = result.copy(dxwrapper = requiredWrapper)
+                    }
+                }
+            } catch (_: Exception) { /* non-Steam container ID or parse failure — skip */ }
+        }
+
         // Layer 3+: user's explicit per-game profile overrides win over KnownGameFixes.
         val overrides = GameProfileStore.load(context, appId) ?: return result
         if (overrides.compatibilityLayerVersionId != null) {
@@ -1067,10 +1150,13 @@ object ContainerUtils {
             }
         }
         if (overrides.dxVersionOverride != null && overrides.dxVersionOverride != GameProfileOverrides.DX_AUTO) {
+            // DX9 uses DXVK (not wined3d) — wined3d's Vulkan backend has no DX9 fixed-function
+            // state support and wined3d's GL backend (Zink) reports vendor 0000 on Adreno.
+            // DXVK is the only viable DX9 renderer on this platform (confirmed via 11 test logs).
             val wrapper = when (overrides.dxVersionOverride.uppercase()) {
-                GameProfileOverrides.DX_9 -> "wined3d"
-                GameProfileOverrides.DX_10, GameProfileOverrides.DX_11 -> "dxvk"
-                GameProfileOverrides.DX_12 -> "vkd3d"
+                GameProfileOverrides.DX_9 -> "dxvk-${DefaultVersion.DXVK}"
+                GameProfileOverrides.DX_10, GameProfileOverrides.DX_11 -> "dxvk-${DefaultVersion.DXVK}"
+                GameProfileOverrides.DX_12 -> "vkd3d-${DefaultVersion.VKD3D}"
                 else -> result.dxwrapper
             }
             result = result.copy(dxwrapper = wrapper)
@@ -1089,9 +1175,61 @@ object ContainerUtils {
 
         // Sync per-game overrides (e.g. compatibilityLayerVersionId from version picker) into container
         // so container.wineVersion matches what launch uses (WineInfo.fromIdentifier → getInstallDir).
+        val wineVersionBeforeOverride = container.wineVersion
         var containerData = toContainerData(container)
         containerData = applyPerGameContainerOverrides(context, appId, containerData)
         applyToContainer(context, container, containerData)
+
+        // When the KnownGameFix (or user version picker) changes the Proton version, the existing
+        // Wine prefix was initialized for the old version. Stale Proton N registry entries cause
+        // fatal errors in Proton M (e.g. "could not load kernel32.dll, STATUS_DLL_NOT_FOUND").
+        // Clearing appVersion forces firstTimeBoot = true in XServerScreen, which re-runs
+        // extractContainerPatternFile with the new Proton version, rewriting the prefix correctly.
+        // This only triggers once — after re-init, wineVersion is saved as the new version and
+        // originalWineVersion matches on the next launch so no re-init loop occurs.
+        if (wineVersionBeforeOverride.isNotEmpty() && container.wineVersion != wineVersionBeforeOverride) {
+            Timber.i("WineVersion migrated $wineVersionBeforeOverride → ${container.wineVersion} for $appId — clearing appVersion to force Wine prefix re-init")
+            container.putExtra("appVersion", "")
+            container.saveData()
+        }
+
+        // Detect broken Wine prefix: missing display configuration in system.reg.
+        //
+        // In Wine 9/10, winex11.drv writes display adapter entries to the system registry during
+        // the first successful wineboot. If wineboot ever ran without the Winlator X server being
+        // ready (race condition at first boot, or the X server connection silently failed), the
+        // display config is never written. Every subsequent launch then fails:
+        //   lock_display_devices: Failed to read display config
+        //   → winex11.drv unloads immediately
+        //   → wined3d can't create its GL caps context window
+        //   → page fault / crash
+        //
+        // Detection: system.reg missing a CurrentControlSet\Control\Video\{...} key means no
+        // display adapter was ever registered. Clearing appVersion triggers a fresh wineboot which
+        // re-runs the prefix initialisation — this time the X server IS running because
+        // startEnvironmentComponents() always completes before the guest process is launched.
+        if (container.getExtra("appVersion", "").isNotEmpty()) {
+            // Only check on a prefix that has already been initialised (appVersion is set).
+            // Fresh prefixes are fine — they will initialise correctly on first boot.
+            val systemReg = File(container.rootDir, ".wine/system.reg")
+            if (systemReg.exists()) {
+                val hasDisplayConfig = try {
+                    systemReg.bufferedReader().use { reader ->
+                        reader.lineSequence().any { line ->
+                            line.contains("Control\\\\Video\\\\{", ignoreCase = true)
+                        }
+                    }
+                } catch (_: Exception) { true } // default to true on read error — don't clear unnecessarily
+                if (!hasDisplayConfig) {
+                    Timber.w(
+                        "BrokenPrefix: system.reg missing display adapter config for $appId — " +
+                            "forcing prefix re-init so wineboot can write display config with X server running"
+                    )
+                    container.putExtra("appVersion", "")
+                    container.saveData()
+                }
+            }
+        }
 
         // Ensure Custom Games have the A: drive mapped to the game folder
         // and GOG games have a drive mapped to the GOG games directory
@@ -1150,7 +1288,38 @@ object ContainerUtils {
         } else {
             Timber.w("Could not find gameFolderPath for game $appId, skipping drive mapping update")
         }
+
+        // Apply per-game Wine registry settings (AppDefaults, compat shims, etc.).
+        // These complement extraEnvVars for fixes that must live in the Wine registry, not the env.
+        applyPerGameWineRegistryFixes(appId, container)
+
         return container
+    }
+
+    /**
+     * Writes per-game Wine AppDefaults entries to the container's user.reg before Wine starts.
+     *
+     * Called AFTER applyToContainer so user.reg already has the baseline Wine D3D keys and can
+     * safely receive additional per-game entries. wineboot (first-boot in XServerScreen) merges
+     * its template but leaves pre-existing custom HKCU\Software\Wine\AppDefaults keys intact.
+     */
+    private fun applyPerGameWineRegistryFixes(appId: String, container: Container) {
+        val steamId = appId.removePrefix("STEAM_").toIntOrNull() ?: return
+        @Suppress("UNUSED_VARIABLE")
+        val userRegFile = File(container.rootDir, ".wine/user.reg")
+
+        when (steamId) {
+            // Reserved for future per-game Wine registry overrides.
+            // NOTE: the BioShock 2 Remastered (409720) Version=winxp AppDefaults entry that was
+            // here was INCORRECT and has been removed.  AppDefaults Version changes what
+            // GetVersion() reports to the app — it does NOT change Wine's exception dispatch path.
+            // The actual fix for issue #8 (page fault on execute access at FEX WoW64 thunk in
+            // non-executable heap) is ensuring /etc/machine-id is present so rsaenh HMAC
+            // derivation succeeds and the Aspyr DRM check passes without throwing a C++ exception.
+            // See: GuestProgramLauncherComponent (explicit --bind for /etc/machine-id) and
+            //      ContainerUtils.ensureMachineId (writes the file before proot starts).
+            else -> {}
+        }
     }
 
     fun getOrCreateContainerWithOverride(context: Context, appId: String): Container {

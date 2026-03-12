@@ -98,6 +98,38 @@ object GameConfigRecommender {
                 put("VKD3D_CONFIG", "pipeline_library_app_cache,no_upload_hvv,force_static_cbv")
                 put("PROTON_ENABLE_NVAPI", "0")
             }
+            // NOTE: DX9 games use DXVK (no d3d9 override) — do NOT add d3d9=b here.
+            //
+            // Previous versions of this recommender added d3d9=b + WINE_D3D_CONFIG=renderer=gl
+            // for all 32-bit DX9 games, based on a hypothesis that "FEX WoW64 misaligns the
+            // Display* pointer for vkCreateXlibSurfaceKHR".  Extensive per-game testing
+            // (BioShock 2 Remastered, 9 log iterations) disproved this and revealed that
+            // BOTH wined3d rendering paths fail structurally for DX9 — not just for one game:
+            //
+            //  wined3d renderer=gl (Zink path):
+            //    Zink's OpenGL wrapper always reports GL_VENDOR "0000" instead of the real
+            //    Qualcomm vendor ID → wined3d_guess_card finds no card selector → falls back
+            //    to generic GPU settings → shader compilation stall loop → permanent black screen.
+            //    This affects every DX9 game on this platform, not specific titles.
+            //
+            //  wined3d renderer=vulkan (direct Vulkan path):
+            //    Wine's wined3d Vulkan backend was built for DX11 (VKD3D path). For DX9 it is
+            //    structurally incomplete: validate_state_table shows a dozen missing DX9
+            //    fixed-function render states (LIGHTING, SPECULARENABLE, COLORVERTEX, etc.),
+            //    and wined3d_swapchain_vk_create_vulkan_swapchain has no alpha_mode mapping for
+            //    DX9 present params (alpha_mode arrives as garbage 0xa) → VkSurface creation
+            //    fails → vkDestroySurfaceKHR assertion crash in winevulkan/loader_thunks.c.
+            //    Again, structural — affects every DX9 game.
+            //
+            //  DXVK (native d3d9.dll, no override):
+            //    DXVK has a mature, complete DX9 implementation that bypasses wined3d entirely.
+            //    It uses the GameNative shared framebuffer presentation path already used by
+            //    DX11/DX12 games. Confirmed working for 32-bit DX9 under arm64ec FEX WoW64.
+            //
+            // Consequence: DXVK is the correct and only viable default for all DX9 games on
+            // this platform. No d3d9=b override is needed or should be added here. If a
+            // specific game has a conflict with DXVK, that game gets a KnownGameFix entry.
+
             // XAudio2 override — detected from EXE scan (or from KnownGameFix below)
             if (scanResult.needsXAudio2Override) {
                 val existing = get("WINEDLLOVERRIDES") ?: ""
@@ -181,7 +213,11 @@ object GameConfigRecommender {
         } else {
             append(" based on ProtonDB ${tier.name} rating")
         }
-        append(". $dx via ${if (dx == DxVersion.DX12) "VKD3D" else "DXVK"}. ")
+        val renderer = when (dx) {
+            DxVersion.DX12 -> "VKD3D"
+            else           -> "DXVK"
+        }
+        append(". $dx via $renderer. ")
         append("Resolution scale and memory budget optimized for ${hw.totalRamMb} MB RAM.")
     }
 }

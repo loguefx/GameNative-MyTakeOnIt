@@ -18,7 +18,11 @@ public class DXVKHelper {
     public static void setEnvVars(Context context, KeyValueSet config, EnvVars envVars) {
         ImageFs imageFs = ImageFs.find(context);
         envVars.put("DXVK_STATE_CACHE_PATH", "/data/data/app.gamenative/files/imagefs"+ImageFs.CACHE_PATH);
-        envVars.put("DXVK_LOG_LEVEL", "none");
+        // warn level: only Vulkan init failures and device errors appear — zero overhead when working.
+        // DXVK_LOG_TO_STDERR routes that output into wine_output.log which is already dumped to logcat,
+        // so any DXVK crash reason appears automatically in the next logcat share without extra steps.
+        envVars.put("DXVK_LOG_LEVEL", "warn");
+        envVars.put("DXVK_LOG_TO_STDERR", "1");
         envVars.put("DXVK_HUD", "none");
 
         // Task 3 — Audio: 60ms Pulse buffer so Wine audio thread doesn't block the game thread

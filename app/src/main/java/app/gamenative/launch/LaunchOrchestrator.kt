@@ -311,7 +311,7 @@ object LaunchOrchestrator {
             envVars.put("GN_WINE_LAUNCH_ARGS", config.wineLaunchArgs)
         }
 
-        // Diagnostic: log the final env var values that matter most for compatibility.
+        // Diagnostic: log all final env vars that affect rendering, audio, and Wine behaviour.
         // These lines appear in logcat with tag "GameLaunch" — grep for "LaunchEnv" to filter.
         val dllOverrides = envVars.get("WINEDLLOVERRIDES")
         if (dllOverrides.isEmpty()) {
@@ -319,9 +319,13 @@ object LaunchOrchestrator {
                 "LaunchEnv appId=$appId WINEDLLOVERRIDES=<empty> — audio/DRM overrides not applied!"
             )
         } else {
-            Timber.tag("GameLaunch").d(
-                "LaunchEnv appId=$appId WINEDLLOVERRIDES=[$dllOverrides]"
-            )
+            Timber.tag("GameLaunch").d("LaunchEnv appId=$appId WINEDLLOVERRIDES=[$dllOverrides]")
+        }
+        val wineD3dConfig = envVars.get("WINE_D3D_CONFIG")
+        if (wineD3dConfig.isNotEmpty()) {
+            Timber.tag("GameLaunch").d("LaunchEnv appId=$appId WINE_D3D_CONFIG=[$wineD3dConfig]")
+        } else {
+            Timber.tag("GameLaunch").d("LaunchEnv appId=$appId WINE_D3D_CONFIG=<not set> (wined3d will use its compiled-in default renderer)")
         }
         val pulseLatency = envVars.get("PULSE_LATENCY_MSEC")
         if (pulseLatency.isNotEmpty()) {
@@ -331,17 +335,29 @@ object LaunchOrchestrator {
         if (winePath.isNotEmpty()) {
             Timber.tag("GameLaunch").d("LaunchEnv appId=$appId WINEPATH=$winePath")
         }
+        val wineArgs = envVars.get("GN_WINE_LAUNCH_ARGS")
+        if (wineArgs.isNotEmpty()) {
+            Timber.tag("GameLaunch").d("LaunchEnv appId=$appId GN_WINE_LAUNCH_ARGS=[$wineArgs]")
+        }
+        val dxvkLogLevel = envVars.get("DXVK_LOG_LEVEL")
+        Timber.tag("GameLaunch").d("LaunchEnv appId=$appId DXVK_LOG_LEVEL=$dxvkLogLevel DXVK_LOG_TO_STDERR=${envVars.get("DXVK_LOG_TO_STDERR")}")
+        val display = envVars.get("DISPLAY")
+        Timber.tag("GameLaunch").d("LaunchEnv appId=$appId DISPLAY=$display (winex11.drv abstract socket: \\0/tmp/.X11-unix/X0)")
     }
 
     /**
-     * Appends [newOverrides] (semicolon-separated WINEDLLOVERRIDES tokens) to the existing
-     * WINEDLLOVERRIDES in [envVars], skipping any token that is already present.
+     * Merges [newOverrides] (semicolon-separated WINEDLLOVERRIDES tokens) into the existing
+     * WINEDLLOVERRIDES in [envVars].
      *
-     * Using append-not-replace preserves infrastructure overrides written earlier by
-     * DXVKHelper (e.g. winepulse.drv=n,b for PulseAudio, d3d8=n,b for DX8 games) when a
-     * KnownGameFix or saved GameConfig also specifies WINEDLLOVERRIDES.  Without merging,
-     * the put() would silently drop the audio driver override and cause games like BioShock 2
-     * Remastered to exit cleanly after ~4 s when XAudio2 → PulseAudio initialisation fails.
+     * New overrides WIN over existing entries for the same DLL name.  This ensures that
+     * KnownGameFix entries (applied last, highest-priority layer) override any stale value
+     * that was written to the container config by an earlier session (e.g. rsaenh=n,b set
+     * via ADB debug that must not block a later rsaenh=b fix).  Wine parses
+     * WINEDLLOVERRIDES left-to-right with first-match-wins, so new entries are placed first.
+     *
+     * Existing entries for DLLs NOT mentioned in newOverrides are preserved, so infrastructure
+     * overrides written earlier by DXVKHelper (e.g. winepulse.drv=n,b, d3d8=n,b) survive when
+     * a KnownGameFix adds its own overrides.
      */
     private fun mergeWineDllOverrides(envVars: com.winlator.core.envvars.EnvVars, newOverrides: String) {
         val existing = envVars.get("WINEDLLOVERRIDES")
@@ -349,11 +365,16 @@ object LaunchOrchestrator {
             envVars.put("WINEDLLOVERRIDES", newOverrides)
             return
         }
-        val existingSet = existing.split(";").map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
-        val toAdd = newOverrides.split(";").map { it.trim() }.filter { it.isNotEmpty() && it !in existingSet }
-        if (toAdd.isNotEmpty()) {
-            envVars.put("WINEDLLOVERRIDES", "$existing;${toAdd.joinToString(";")}")
+        // Parse new overrides; extract the DLL name (part before '=') for each entry.
+        val newEntries = newOverrides.split(";").map { it.trim() }.filter { it.isNotEmpty() }
+        val newDllNames = newEntries.map { it.substringBefore('=').trim().lowercase() }.toSet()
+        // Keep existing entries only for DLLs not covered by the new overrides.
+        val kept = existing.split(";").map { it.trim() }.filter { entry ->
+            entry.isNotEmpty() && entry.substringBefore('=').trim().lowercase() !in newDllNames
         }
+        // New entries come first so Wine's left-to-right first-match parsing picks them up.
+        val merged = (newEntries + kept).joinToString(";")
+        envVars.put("WINEDLLOVERRIDES", merged)
     }
 
     private fun writeDxvkConfig(context: Context, appId: String, config: GameConfig) {

@@ -2117,6 +2117,10 @@ private fun setupXEnvironment(
     // environment.addComponent(SteamClientComponent(UnixSocketConfig.createSocket(SteamService.getAppDirPath(appId), "/steam_pipe")))
     // environment.addComponent(SteamClientComponent(UnixSocketConfig.createSocket(rootPath, UnixSocketConfig.STEAM_PIPE_PATH)))
 
+    // /etc/machine-id must exist before Wine starts so rsaenh HMAC key derivation is stable.
+    // Missing machine-id → DRM crypto mismatch → game throws C++ exception → FEX WoW64 crash.
+    ContainerUtils.ensureMachineId(context)
+
     if (xServerState.value.audioDriver == "alsa") {
         envVars.put("ANDROID_ALSA_SERVER", imageFs.getRootDir().getPath() + UnixSocketConfig.ALSA_SERVER_PATH)
         envVars.put("ANDROID_ASERVER_USE_SHM", "true")

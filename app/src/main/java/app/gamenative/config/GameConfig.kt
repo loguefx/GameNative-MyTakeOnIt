@@ -55,6 +55,14 @@ enum class ProtonVersion(
 ) {
     PROTON_10_0("Proton 10.0"),
     PROTON_9_0("Proton 9.0"),
+    /**
+     * x86_64 Wine binary running under Box64 JIT.  All 32-bit WoW64 code (including exception
+     * dispatch) is handled entirely within Box64's x86 JIT — no FEX ARM64 bridge thunks.
+     * Required for 32-bit games whose DRM or engine uses C++ exceptions as normal control flow:
+     * FEX WoW64 (ARM64EC builds) crashes those games because Android SELinux blocks execmem for
+     * anonymous mappings, so FEX thunks land in non-executable heap and SIGBUS/SIGSEGV on call.
+     */
+    PROTON_9_0_X86_64("Proton 9.0 (x86_64)"),
     PROTON_8_0("Proton 8.0"),
     PROTON_7_0("Proton 7.0"),
     WINE_GE_LATEST("Wine-GE"),

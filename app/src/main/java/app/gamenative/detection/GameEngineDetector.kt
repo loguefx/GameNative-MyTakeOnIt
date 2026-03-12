@@ -37,6 +37,16 @@ object GameEngineDetector {
         Fingerprint("Engine/Binaries/Win64/UE4Editor.exe", EngineHint.UNREAL_4, "UE4 Editor binary"),
         // Most shipped UE4 games have a *-Win64-Shipping.exe at root — checked via suffix scan
 
+        // ── Unreal Engine 3 (check after UE4/UE5 — UE3 doesn't have Engine/ folder) ───
+        // CookedPC / CookedPCConsole: UE3's cooked-content directories — UE4+ use Paks/ instead.
+        // Script/Core.u: UE3 pre-compiled UnrealScript package — never exists in UE4/UE5.
+        // Covers: BioShock 1/2, Batman Arkham series, Mirror's Edge, Mass Effect 1-3,
+        //         Borderlands 1, Dishonored, Alice: Madness Returns, and ~500 other 2007-2014 games.
+        Fingerprint("Script/Core.u",     EngineHint.UNREAL_3, "UE3 compiled core UnrealScript"),
+        Fingerprint("Script/Engine.u",   EngineHint.UNREAL_3, "UE3 compiled engine UnrealScript"),
+        Fingerprint("CookedPCConsole",   EngineHint.UNREAL_3, "UE3 cooked console content dir"),
+        Fingerprint("CookedPC",          EngineHint.UNREAL_3, "UE3 cooked PC content dir"),
+
         // ── Capcom RE Engine ───────────────────────────────────────────────────────────
         Fingerprint("re_chunk_000.pak", EngineHint.RE_ENGINE, "RE Engine pak archive"),
         Fingerprint("RE_RSZ.ini", EngineHint.RE_ENGINE, "RE Engine RSZ config"),
@@ -100,12 +110,15 @@ object GameEngineDetector {
             if (File(gameDir, relativePath).exists()) return engine
         }
 
-        // Wildcard pass: look for *-Win64-Shipping.exe at root → UE4 or UE5
-        // (no Editor binary = shipped build)
+        // Wildcard pass: shipping EXE suffix → Unreal Engine version
         val rootFiles = gameDir.listFiles() ?: return EngineHint.UNKNOWN
-        val hasShippingExe = rootFiles.any { it.name.endsWith("-Win64-Shipping.exe") }
-        if (hasShippingExe) {
-            // Distinguish UE4 vs UE5 by checking for SM6-related shader bytecode folder
+
+        // *-Win32-Shipping.exe → UE3 (32-bit shipped builds, e.g. older Batman/Mass Effect titles)
+        if (rootFiles.any { it.name.endsWith("-Win32-Shipping.exe") }) return EngineHint.UNREAL_3
+
+        // *-Win64-Shipping.exe → UE4 or UE5 (distinguish by SM6 shader cache)
+        val hasWin64ShippingExe = rootFiles.any { it.name.endsWith("-Win64-Shipping.exe") }
+        if (hasWin64ShippingExe) {
             val hasSm6Shaders = File(gameDir, "Engine/GlobalShaderCache-PCD3D_SM6.bin").exists()
             return if (hasSm6Shaders) EngineHint.UNREAL_5 else EngineHint.UNREAL_4
         }

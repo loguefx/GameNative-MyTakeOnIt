@@ -70,8 +70,9 @@ object GameExeScanner {
 
         cache[cacheKey] = result
         Timber.tag("ExeScanner").i(
-            "${exeFile.name}: dx=${result.dxVersion} xaudio=${result.needsXAudio2Override} " +
-                "mfplat=${result.needsMfplatOverride} vulkan=${result.hasVulkanImport}",
+            "${exeFile.name}: dx=${result.dxVersion} is32bit=${result.is32bit} " +
+                "xaudio=${result.needsXAudio2Override} mfplat=${result.needsMfplatOverride} " +
+                "vulkan=${result.hasVulkanImport}",
         )
         result
     }
@@ -92,13 +93,50 @@ object GameExeScanner {
         }?.second ?: DxVersion.AUTO
 
         return ExeScanResult(
-            dxVersion = dxVersion,
+            dxVersion            = dxVersion,
             needsXAudio2Override = content.contains(XAUDIO2_MARKER),
             needsMfplatOverride  = content.contains(MFPLAT_MARKER),
             needsXInput          = content.contains(XINPUT_MARKER),
             hasVulkanImport      = content.contains(VULKAN_MARKER),
+            is32bit              = readIs32Bit(bytes),
             exeLastModifiedMs    = exeFile.lastModified(),
         )
+    }
+
+    /**
+     * Reads the PE Optional Header Machine field to determine EXE bitness.
+     *
+     * PE layout:
+     *   0x00–0x01  MZ magic ('M', 'Z')
+     *   0x3C–0x3F  e_lfanew — 4-byte LE offset to the PE header
+     *   PE+0x00–03 PE signature ('P','E',0x00,0x00)
+     *   PE+0x04–05 Machine type (2-byte LE)
+     *              0x014C = IMAGE_FILE_MACHINE_I386  (32-bit x86) → is32bit = true
+     *              0x8664 = IMAGE_FILE_MACHINE_AMD64 (64-bit x64) → is32bit = false
+     *              0xAA64 = IMAGE_FILE_MACHINE_ARM64              → is32bit = false
+     *
+     * Returns false on any parse error so non-Windows binaries are treated as 64-bit
+     * (safe default — they won't go through WoW64 anyway).
+     */
+    private fun readIs32Bit(bytes: ByteArray): Boolean {
+        if (bytes.size < 0x40) return false
+        // MZ magic
+        if (bytes[0] != 0x4D.toByte() || bytes[1] != 0x5A.toByte()) return false
+        // e_lfanew at MZ+0x3C (4-byte LE)
+        val peOffset = (bytes[0x3C].toInt() and 0xFF) or
+            ((bytes[0x3D].toInt() and 0xFF) shl 8) or
+            ((bytes[0x3E].toInt() and 0xFF) shl 16) or
+            ((bytes[0x3F].toInt() and 0xFF) shl 24)
+        if (peOffset < 0 || peOffset + 6 > bytes.size) return false
+        // PE\0\0 signature
+        if (bytes[peOffset]     != 0x50.toByte() ||
+            bytes[peOffset + 1] != 0x45.toByte() ||
+            bytes[peOffset + 2] != 0x00.toByte() ||
+            bytes[peOffset + 3] != 0x00.toByte()) return false
+        // Machine at PE+4 (2-byte LE): 0x014C = IMAGE_FILE_MACHINE_I386
+        val machine = (bytes[peOffset + 4].toInt() and 0xFF) or
+            ((bytes[peOffset + 5].toInt() and 0xFF) shl 8)
+        return machine == 0x014C
     }
 
     private fun defaultResult() = ExeScanResult(dxVersion = DxVersion.AUTO)
