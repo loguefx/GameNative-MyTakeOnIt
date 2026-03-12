@@ -108,13 +108,17 @@ public abstract class ProcessHelper {
             pid = pidField.getInt(process);
             pidField.setAccessible(false);
 
-            if (!debugCallbacks.isEmpty()) {
-                createDebugThread(process.getInputStream());
-                createDebugThread(process.getErrorStream());
-            }
+            // Use else-if to make the two stream-reading branches mutually exclusive.
+            // Previously both branches could be true simultaneously: each would call
+            // process.getInputStream()/getErrorStream() and start competing threads on the same
+            // InputStream, causing interleaved/partial log lines and undefined read behaviour.
+            // outputLogTag (tagged logcat) takes priority over the generic debug callbacks.
             if (outputLogTag != null) {
                 createDebugThreadWithTag(process.getInputStream(), "STDOUT", pid, outputLogTag);
                 createDebugThreadWithTag(process.getErrorStream(), "STDERR", pid, outputLogTag);
+            } else if (!debugCallbacks.isEmpty()) {
+                createDebugThread(process.getInputStream());
+                createDebugThread(process.getErrorStream());
             }
 
             if (terminationCallback != null) createWaitForThread(process, terminationCallback);
@@ -265,7 +269,11 @@ public abstract class ProcessHelper {
                     terminationCallback.call(status);
                 }
                 catch (InterruptedException e) {
-                    Log.e("ProcessHelper", "Error waiting for process termination", e);
+                    Thread.currentThread().interrupt(); // restore interrupt flag
+                    Log.e("ProcessHelper", "Wait thread interrupted — invoking terminationCallback(-1) to prevent SteamService keepAlive leak", e);
+                    // Without this call, SteamService.setKeepAlive(false) is never called and
+                    // the game screen never navigates away, leaving the app in a frozen state.
+                    terminationCallback.call(-1);
                 }
             }
         });
@@ -386,11 +394,17 @@ public abstract class ProcessHelper {
             }
         });
 
+        // File.list() returns null (not an empty array) when /proc is unavailable or an I/O error
+        // occurs. Dereferencing null.length crashed every pause/resume/stop call on affected devices.
+        if (allPids == null) return filteredPids;
+
         for (int index = 0; index < allPids.length; index++){
             String data = "";
-            try {
-                FileInputStream fr = new FileInputStream(proc + "/" + allPids[index] + "/stat");
-                BufferedReader br = new BufferedReader(new InputStreamReader(fr));
+            // Use try-with-resources so the FileInputStream is always closed, even on exception.
+            // Previously the stream was opened but never closed → file descriptor leak on every
+            // pass through this loop, which eventually caused EMFILE failures in unrelated code.
+            try (FileInputStream fr = new FileInputStream(proc + "/" + allPids[index] + "/stat");
+                 BufferedReader br = new BufferedReader(new InputStreamReader(fr))) {
                 data = br.readLine();
             }
             catch (IOException e) {}

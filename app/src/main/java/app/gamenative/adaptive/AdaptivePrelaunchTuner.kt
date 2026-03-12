@@ -85,30 +85,27 @@ object AdaptivePrelaunchTuner {
             else -> config.resolutionScale
         }
 
-        // ── DX version downgrade under extreme memory pressure ───────────────────────
-        // DX12 (VKD3D) has a higher baseline memory footprint than DX11 (DXVK).
-        // If available memory is critically low AND the game isn't hardcoded to DX12,
-        // downgrade to DX11 to avoid OOM crashes on first scene load.
-        val tunedDxVersion = if (availMb < 1_800 && config.dxVersion == DxVersion.DX12) {
-            Timber.tag("PrelaunchTune").w("RAM critical + DX12 → downgrading to DX11 to prevent OOM")
-            DxVersion.DX11
-        } else {
-            config.dxVersion
-        }
-        val tunedDxvkEnabled  = tunedDxVersion != DxVersion.DX12
-        val tunedVkd3dEnabled = tunedDxVersion == DxVersion.DX12
+        // NOTE: DX12 → DX11 downgrade was intentionally removed here.
+        //
+        // The tuner runs AFTER container.dxwrapper has already been written to disk by
+        // applyPerGameContainerOverrides (called from getOrCreateContainer).
+        // XServerScreen uses container.dxwrapper — not GameConfig.dxVersion — to decide which
+        // DLLs to extract. Downgrading dxVersion in GameConfig while dxwrapper stays "vkd3d-*"
+        // causes VKD3D DLLs to be extracted but without their required env vars
+        // (VKD3D_CONFIG, VKD3D_DISABLE_EXTENSIONS, etc.) because applyGameConfig only sets those
+        // when config.vkd3dEnabled = true. The result is VKD3D starting unconfigured → black screen.
+        //
+        // The DXVK budget (tunedBudget) and resolution scale (tunedScale) reductions above already
+        // handle the OOM risk for DX12 games under memory pressure — no DX downgrade is needed.
 
         val changed = tunedFps != originalFps || tunedBudget != originalBudget ||
-            tunedScale != originalScale || tunedDxVersion != config.dxVersion
+            tunedScale != originalScale
         if (!changed) return config
 
         return config.copy(
             fpsLimit                  = tunedFps,
             dxvkDeviceLocalMemoryMiB  = tunedBudget,
             resolutionScale           = tunedScale,
-            dxVersion                 = tunedDxVersion,
-            dxvkEnabled               = tunedDxvkEnabled,
-            vkd3dEnabled              = tunedVkd3dEnabled,
             notes                     = config.notes + buildTuneNote(thermal, availMb),
         )
     }

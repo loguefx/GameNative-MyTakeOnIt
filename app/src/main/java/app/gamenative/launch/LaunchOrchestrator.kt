@@ -244,6 +244,12 @@ object LaunchOrchestrator {
             envVars.put("VKD3D_SHADER_MODEL", config.vkd3dShaderModel)
             envVars.put("VKD3D_DISABLE_EXTENSIONS", "VK_KHR_ray_tracing_pipeline,VK_KHR_ray_query")
             envVars.put("VKD3D_DEBUG", "none")
+            // DXVKHelper.setEnvVars (called by XServerScreen for DXVK containers) appends
+            // winepulse.drv=n,b to WINEDLLOVERRIDES. DXVKHelper.setVKD3DEnvVars does NOT —
+            // so VKD3D (DX12) games would get Wine's built-in winepulse.drv instead of the
+            // native PulseAudio driver, causing stuttering or completely silent audio.
+            // Apply it explicitly here so DX12 games get the same audio treatment as DX9/11.
+            mergeWineDllOverrides(envVars, "winepulse.drv=n,b")
         }
 
         // Wine sync
@@ -388,7 +394,7 @@ object LaunchOrchestrator {
             appendLine("dxvk.maxFrameLatency = 1")
             appendLine("dxvk.presentMode = ${config.dxvkPresentMode}")
             appendLine("dxvk.trackPipelineLifetime = 0")
-            appendLine("DXVK_HUD = none")
+            appendLine("dxvk.hud = none")
             appendLine("dxvk.logLevel = none")
         }
         val configFile = File(GamePaths.getDxvkConfigPath(context, appId))

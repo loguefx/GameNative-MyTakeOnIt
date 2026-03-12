@@ -252,8 +252,12 @@ fun XServerScreen(
     onGameLaunchError: ((String) -> Unit)? = null,
 ) {
     Timber.i("Starting up XServerScreen")
-    // Reset per-session exit guard so PostHog game_exited fires for every new game launch.
-    isExiting.set(false)
+    // Reset per-session exit guard exactly once at composition entry, NOT in the composable body.
+    // Putting it in the body caused it to fire on every recomposition (state changes, overlays,
+    // achievement notifications) which would reset the guard mid-exit and allow exit() to run twice.
+    LaunchedEffect(Unit) {
+        isExiting.set(false)
+    }
     val context = LocalContext.current
     val view = LocalView.current
     // Task 7 — Unbuffered input dispatch for lower touch/gamepad latency
@@ -388,9 +392,17 @@ fun XServerScreen(
 
     // Achievement unlock notification: auto-dismisses after 5 seconds.
     var achievementNotification by remember { mutableStateOf<SteamEvent.AchievementUnlocked?>(null) }
-    LaunchedEffect(Unit) {
-        PluviaApp.events.on<SteamEvent.AchievementUnlocked, Unit> { event ->
+    // Use DisposableEffect so the listener is unregistered when this composable leaves composition.
+    // Previously a LaunchedEffect was used — that cancels the coroutine but does NOT unregister the
+    // already-registered callback. After N game sessions, N closures accumulated in the event bus,
+    // each writing into a dead composition's MutableState → IllegalStateException from Compose.
+    DisposableEffect(Unit) {
+        val onAchievementUnlocked: (SteamEvent.AchievementUnlocked) -> Unit = { event ->
             achievementNotification = event
+        }
+        PluviaApp.events.on<SteamEvent.AchievementUnlocked, Unit>(onAchievementUnlocked)
+        onDispose {
+            PluviaApp.events.off<SteamEvent.AchievementUnlocked, Unit>(onAchievementUnlocked)
         }
     }
     LaunchedEffect(achievementNotification) {
@@ -553,7 +565,8 @@ fun XServerScreen(
                                         null
                                     } ?: manager?.getProfile(0) ?: profiles.getOrNull(2) ?: profiles.first()
 
-                                    showInputControls(targetProfile, xServerView!!.getxServer().winHandler, container)
+                                    val wh = xServerView?.getxServer()?.winHandler ?: return@onNavigationItemSelected
+                                    showInputControls(targetProfile, wh, container)
                                 }
                             }
                             areControlsVisible = !areControlsVisible
@@ -627,7 +640,8 @@ fun XServerScreen(
                                 }
 
                                 if (!areControlsVisible) {
-                                    showInputControls(activeProfile, xServerView!!.getxServer().winHandler, container)
+                                    val wh = xServerView?.getxServer()?.winHandler ?: return@onNavigationItemSelected
+                                    showInputControls(activeProfile, wh, container)
                                     areControlsVisible = true
                                 }
                             }
@@ -654,7 +668,11 @@ fun XServerScreen(
                             PluviaApp.xEnvironment?.onResume()
                             isOverlayPaused = false
                             PluviaApp.isOverlayPaused = false
-                            exit(xServerView!!.getxServer().winHandler, PluviaApp.xEnvironment, frameRating, currentAppInfo, container, onExit, navigateBack)
+                            // Safe null access: xServerView may be null if the user taps Exit Game
+                            // before the AndroidView factory has completed (rare, but possible in
+                            // the first ~100ms). Pass null winHandler — exit() handles it via ?.
+                            val wh = xServerView?.getxServer()?.winHandler
+                            exit(wh, PluviaApp.xEnvironment, frameRating, currentAppInfo, container, onExit, navigateBack)
                         }
                     }
                 }
@@ -691,21 +709,25 @@ fun XServerScreen(
     }
 
     DisposableEffect(lifecycleOwner, container) {
+        // xServerView is null until the AndroidView factory block runs (after first composition).
+        // These callbacks are registered immediately, so any event that fires during that ~100ms
+        // window would NPE on xServerView!!. Use safe null access and bail out if not ready yet.
         val onActivityDestroyed: (AndroidEvent.ActivityDestroyed) -> Unit = {
             Timber.i("onActivityDestroyed")
-            exit(xServerView!!.getxServer().winHandler, PluviaApp.xEnvironment, frameRating, currentAppInfo, container, onExit, navigateBack)
+            val wh = xServerView?.getxServer()?.winHandler
+            if (wh != null) exit(wh, PluviaApp.xEnvironment, frameRating, currentAppInfo, container, onExit, navigateBack)
         }
         val onKeyEvent: (AndroidEvent.KeyEvent) -> Boolean = {
             val isKeyboard = Keyboard.isKeyboardDevice(it.event.device)
             val isGamepad = ExternalController.isGameController(it.event.device)
-            // logD("onKeyEvent(${it.event.device.sources})\n\tisGamepad: $isGamepad\n\tisKeyboard: $isKeyboard\n\t${it.event}")
 
             var handled = false
             if (isGamepad) {
                 handled = physicalControllerHandler?.onKeyEvent(it.event) == true
                 if (!handled) handled = PluviaApp.inputControlsView?.onKeyEvent(it.event) == true
-                // Final fallback to WinHandler passthrough
-                if (!handled) handled = xServerView!!.getxServer().winHandler.onKeyEvent(it.event)
+                // Final fallback to WinHandler passthrough — safe null access so events arriving
+                // before AndroidView factory completes are silently dropped rather than crashing.
+                if (!handled) handled = xServerView?.getxServer()?.winHandler?.onKeyEvent(it.event) == true
             }
             if (!handled && isKeyboard) {
                 handled = keyboard?.onKeyEvent(it.event) == true
@@ -719,8 +741,7 @@ fun XServerScreen(
             if (isGamepad && it.event != null) {
                 handled = physicalControllerHandler?.onGenericMotionEvent(it.event!!) == true
                 if (!handled) handled = PluviaApp.inputControlsView?.onGenericMotionEvent(it.event) == true
-                // Final fallback to WinHandler passthrough
-                if (!handled) handled = xServerView!!.getxServer().winHandler.onGenericMotionEvent(it.event)
+                if (!handled) handled = xServerView?.getxServer()?.winHandler?.onGenericMotionEvent(it.event) == true
             }
             if (!handled) {
                 handled = PluviaApp.touchpadView?.onExternalMouseEvent(it.event) == true
@@ -729,11 +750,13 @@ fun XServerScreen(
         }
         val onGuestProgramTerminated: (AndroidEvent.GuestProgramTerminated) -> Unit = {
             Timber.i("onGuestProgramTerminated")
-            exit(xServerView!!.getxServer().winHandler, PluviaApp.xEnvironment, frameRating, currentAppInfo, container, onExit, navigateBack)
+            val wh = xServerView?.getxServer()?.winHandler
+            if (wh != null) exit(wh, PluviaApp.xEnvironment, frameRating, currentAppInfo, container, onExit, navigateBack)
         }
         val onForceCloseApp: (SteamEvent.ForceCloseApp) -> Unit = {
             Timber.i("onForceCloseApp")
-            exit(xServerView!!.getxServer().winHandler, PluviaApp.xEnvironment, frameRating, currentAppInfo, container, onExit, navigateBack)
+            val wh = xServerView?.getxServer()?.winHandler
+            if (wh != null) exit(wh, PluviaApp.xEnvironment, frameRating, currentAppInfo, container, onExit, navigateBack)
         }
         val debugCallback = Callback<String> { outputLine ->
             Timber.i(outputLine ?: "")
@@ -2163,14 +2186,27 @@ private fun setupXEnvironment(
         val gameName = container?.name ?: ""
         // runBlocking acceptable here: resolveGameConfig uses HardwareProfileCache.getProfile(), which
         // returns cached profile quickly on launch path (slow detection only on first run or driver change).
+        // Timeout added to prevent a permanent loading screen if the suspend path hangs (e.g. disk I/O
+        // stall during hardware detection on first run). Falls back to a safe default config.
         val config = kotlinx.coroutines.runBlocking {
-            app.gamenative.launch.LaunchOrchestrator.resolveGameConfig(
-                context = context,
-                appId = appId,
-                gameName = gameName,
-                steamAppId = steamAppId,
-                saveIfFromRecommender = true,
-            )
+            kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                app.gamenative.launch.LaunchOrchestrator.resolveGameConfig(
+                    context = context,
+                    appId = appId,
+                    gameName = gameName,
+                    steamAppId = steamAppId,
+                    saveIfFromRecommender = true,
+                )
+            } ?: run {
+                Timber.tag("XServerScreen").w("resolveGameConfig timed out for appId=$appId — using default config")
+                app.gamenative.launch.LaunchOrchestrator.resolveGameConfig(
+                    context = context,
+                    appId = appId,
+                    gameName = gameName,
+                    steamAppId = steamAppId,
+                    saveIfFromRecommender = false,
+                )
+            }
         }
         app.gamenative.launch.LaunchOrchestrator.applyGameConfig(context, appId, config, envVars)
     }
@@ -2278,9 +2314,15 @@ private fun getWineStartCommand(
 
     if (isSteamGame) {
         // Steam-specific setup
-        if (container.executablePath.isEmpty()){
-            container.executablePath = SteamService.getInstalledExe(gameId)
-            container.saveData()
+        if (container.executablePath.isEmpty()) {
+            val found = SteamService.getInstalledExe(gameId)
+            // Only persist a non-empty path. Saving "" would lock the container into always
+            // hitting the fallback path on future launches, and prevents KnownGameFix.gameExePath
+            // from being tried when getInstalledExe is called again after Steam finishes indexing.
+            if (found.isNotEmpty()) {
+                container.executablePath = found
+                container.saveData()
+            }
         }
         if (!useLegacyDrm){
             // applyGameConfig writes GN_WINE_LAUNCH_ARGS into envVars but runs AFTER this call site.
@@ -2471,10 +2513,18 @@ private fun getWineStartCommand(
                     Timber.tag("XServerScreen").w("getInstalledExe returned empty for $gameId; using KnownGameFixes.gameExePath=${gameFix.gameExePath}")
                     executablePath = gameFix.gameExePath
                 }
+                // Only persist a non-empty result. Saving "" would cause every future launch to
+                // also fail the isEmpty() check above and skip the container.executablePath fast path.
                 if (executablePath.isNotEmpty()) {
                     container.executablePath = executablePath
                     container.saveData()
                 }
+            }
+            // If all three sources (saved path, getInstalledExe, KnownGameFixes.gameExePath) failed,
+            // abort rather than building "D:/" as the command — that silently opens Wine's File Manager.
+            if (executablePath.isEmpty()) {
+                Timber.tag("XServerScreen").e("No executable found for gameId=$gameId after all fallbacks — aborting launch")
+                return "\"explorer.exe\""
             }
             if (useLegacyDrm) {
                 val appDirPath = SteamService.getAppDirPath(gameId)
@@ -2548,18 +2598,26 @@ private fun getSteamlessTarget(
 private fun exit(winHandler: WinHandler?, environment: XEnvironment?, frameRating: FrameRating?, appInfo: SteamApp?, container: Container, onExit: () -> Unit, navigateBack: () -> Unit) {
     Timber.i("Exit called")
 
-    // Prevent duplicate PostHog events when multiple exit triggers fire simultaneously
-    if (isExiting.compareAndSet(false, true)) {
-        PostHog.capture(
-            event = "game_exited",
-            properties = mapOf(
-                "game_name" to appInfo?.name.toString(),
-                "session_length" to (frameRating?.sessionLengthSec ?: 0),
-                "avg_fps" to (frameRating?.avgFPS ?: 0.0),
-                "container_config" to container.containerJson,
-            ),
-        )
+    // Gate the ENTIRE function on compareAndSet, not just PostHog. Previously, only the analytics
+    // capture was guarded, so winHandler.stop(), stopEnvironmentComponents(), onExit(), and
+    // navigateBack() all ran on every call. Two simultaneous exit triggers (Wine process died +
+    // user pressed Back, or GuestProgramTerminated + ForceCloseApp) would call navigateBack()
+    // twice, corrupting the nav back-stack, and stopEnvironmentComponents() twice (undefined
+    // native-layer behaviour).
+    if (!isExiting.compareAndSet(false, true)) {
+        Timber.w("exit() called while already exiting — ignoring duplicate call")
+        return
     }
+
+    PostHog.capture(
+        event = "game_exited",
+        properties = mapOf(
+            "game_name" to appInfo?.name.toString(),
+            "session_length" to (frameRating?.sessionLengthSec ?: 0),
+            "avg_fps" to (frameRating?.avgFPS ?: 0.0),
+            "container_config" to container.containerJson,
+        ),
+    )
 
     // Store session data in container metadata
     frameRating?.let { rating ->
@@ -2572,16 +2630,11 @@ private fun exit(winHandler: WinHandler?, environment: XEnvironment?, frameRatin
     environment?.stopEnvironmentComponents()
     SteamService.keepAlive = false
     app.gamenative.utils.GameRunWakeLocks.release()
-    // AppUtils.restartApplication(this)
-    // PluviaApp.xServerState = null
-    // PluviaApp.xServer = null
-    // PluviaApp.xServerView = null
     PluviaApp.xEnvironment = null
+    PluviaApp.xServerView = null
     PluviaApp.inputControlsView = null
     PluviaApp.inputControlsManager = null
     PluviaApp.touchpadView = null
-    // PluviaApp.touchMouse = null
-    // PluviaApp.keyboard = null
     frameRating?.writeSessionSummary()
     onExit()
     navigateBack()
@@ -3028,18 +3081,21 @@ private fun setupWineSystemFiles(
     // Always refresh components files
     refreshComponentsFiles(context)
 
-    // Normalize dxwrapper for state (dxvk includes version for extraction switch)
+    // Normalize legacy bare "dxvk" / "vkd3d" wrapper strings to their versioned forms.
+    // applyPerGameContainerOverrides now always writes fully-versioned strings (e.g. "dxvk-2.4"),
+    // so this block is only reached by containers that bypassed that path (deep links, legacy data).
+    // Guard against empty config values: dxwrapperConfig.get("version") returns "" when the key is
+    // absent, which would produce "dxvk-" or "vkd3d-" — an invalid name that prevents DLL extraction
+    // (extractDXWrapperFiles looks for "dxwrapper/dxvk-.tzst" which doesn't exist → no d3d9.dll).
     if (xServerState.value.dxwrapper == "dxvk") {
-        xServerState.value = xServerState.value.copy(
-            dxwrapper = "dxvk-" + xServerState.value.dxwrapperConfig?.get("version"),
-        )
+        val v = xServerState.value.dxwrapperConfig?.get("version")
+            ?.takeIf { it.isNotEmpty() } ?: com.winlator.core.DefaultVersion.DXVK
+        xServerState.value = xServerState.value.copy(dxwrapper = "dxvk-$v")
     }
-
-    // Also normalize VKD3D to include version like vkd3d-<version>
     if (xServerState.value.dxwrapper == "vkd3d") {
-        xServerState.value = xServerState.value.copy(
-            dxwrapper = "vkd3d-" + xServerState.value.dxwrapperConfig?.get("vkd3dVersion"),
-        )
+        val v = xServerState.value.dxwrapperConfig?.get("vkd3dVersion")
+            ?.takeIf { it.isNotEmpty() } ?: com.winlator.core.DefaultVersion.VKD3D
+        xServerState.value = xServerState.value.copy(dxwrapper = "vkd3d-$v")
     }
 
     val needReextract = ALWAYS_REEXTRACT || xServerState.value.dxwrapper != container.getExtra("dxwrapper") || container.wineVersion != wineVersion
@@ -3267,12 +3323,15 @@ private fun restoreOriginalDllFiles(
         val contentsManager = ContentsManager(context)
         if (cacheDir.isDirectory) {
             val windowsDir = File(rootDir, ImageFs.WINEPREFIX + "/drive_c/windows")
-            val dirnames = cacheDir.list()
+            // File.list() returns null on I/O error even when isDirectory was true (e.g. storage
+            // unavailable between the check and the list). Use emptyArray as fallback so the
+            // restore loop silently skips rather than crashing with NullPointerException.
+            val dirnames = cacheDir.list() ?: emptyArray<String>()
             var filesCopied = 0
 
             for (dll in dlls) {
                 var success = false
-                for (dirname in dirnames!!) {
+                for (dirname in dirnames) {
                     val srcFile = File(cacheDir, "$dirname/$dll")
                     val dstFile = File(windowsDir, "$dirname/$dll")
                     if (FileUtils.copy(srcFile, dstFile)) success = true

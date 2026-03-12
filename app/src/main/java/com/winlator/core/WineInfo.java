@@ -184,6 +184,19 @@ public class WineInfo implements Parcelable {
             if (wineProfile != null && (wineProfile.type == ContentProfile.ContentType.CONTENT_TYPE_WINE || wineProfile.type == ContentProfile.ContentType.CONTENT_TYPE_PROTON))
                 path = contentsManager.getInstallDir(context, wineProfile).getPath();
 
+            if (path.isEmpty()) {
+                // The identifier parsed correctly but is neither a built-in bionic entry nor an
+                // installed downloaded profile. This happens when a user uninstalls a Proton version
+                // while the container still references it, or when an APK update removes a built-in.
+                // Returning a WineInfo with an empty path causes imageFs.setWinePath("") downstream,
+                // producing PATH="/bin:..." so `wine` cannot be found → guaranteed black screen.
+                // Fall back to MAIN_WINE_VERSION instead so the game at least has a chance to launch.
+                Log.e("WineInfo", "No installation found for identifier '" + identifier +
+                    "' — falling back to MAIN_WINE_VERSION to avoid empty-path black screen");
+                return new WineInfo(MAIN_WINE_VERSION.type, MAIN_WINE_VERSION.version,
+                    MAIN_WINE_VERSION.arch, null);
+            }
+
             return new WineInfo(matcher.group(1), matcher.group(2), matcher.group(4), path);
         }
         else return new WineInfo(MAIN_WINE_VERSION.type, MAIN_WINE_VERSION.version, MAIN_WINE_VERSION.arch, null);

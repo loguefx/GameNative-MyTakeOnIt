@@ -100,7 +100,14 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
             PluviaApp.events.emitJava(new AndroidEvent.SetBootingSplashText("Launching game..."));
             pid = execGuestProgram();
             Log.d("BionicProgramLauncherComponent", "Process " + pid + " started");
-            SteamService.setKeepAlive(true);
+            // Only set keepAlive=true when the process actually started (pid > 0).
+            // When ProcessHelper.exec() throws, the terminationCallback fires BEFORE execGuestProgram()
+            // returns, calling SteamService.setKeepAlive(false). Without this guard, the unconditional
+            // setKeepAlive(true) immediately below would override that cleanup, leaving the Steam
+            // foreground service alive indefinitely and corrupting state for the next launch attempt.
+            if (pid > 0) {
+                SteamService.setKeepAlive(true);
+            }
         }
     }
 
@@ -108,8 +115,13 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
     public void stop() {
         synchronized (lock) {
             if (pid != -1) {
-                Process.killProcess(pid);
-                Log.d("BionicProgramLauncherComponent", "Stopped process " + pid);
+                int pidToKill = pid;
+                // Reset pid immediately before killing so a second stop() call (e.g. from onPause
+                // and the termination callback racing) does not attempt to kill a recycled PID that
+                // the kernel may have re-assigned to an unrelated process.
+                pid = -1;
+                Process.killProcess(pidToKill);
+                Log.d("BionicProgramLauncherComponent", "Stopped process " + pidToKill);
                 List<ProcessHelper.ProcessInfo> subProcesses = ProcessHelper.listSubProcesses();
                 for (ProcessHelper.ProcessInfo subProcess : subProcesses) {
                     Process.killProcess(subProcess.pid);
@@ -213,6 +225,13 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         boolean enablePebLogs = PrefManager.getBoolean("enable_peb_logs", false);
 
 
+        EnvVars envVars = new EnvVars();
+
+        // These debug flags must be written to the LOCAL envVars, not to this.envVars (the external
+        // field passed in by the caller). Previously they were written before the local declaration,
+        // so envVars resolved to this.envVars (which is null by default) → NPE when any debug pref
+        // is enabled. The values are still merged into the final env via envVars.putAll(this.envVars)
+        // below — writing to the local copy here is both safe and correct.
         if (openWithAndroidBrowser)
             envVars.put("WINE_OPEN_WITH_ANDROID_BROWSER", "1");
         if (shareAndroidClipboard) {
@@ -222,8 +241,6 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
         if (enablePebLogs) {
             envVars.put("WINE_LOG_PEB_DATA", "1");
         }
-
-        EnvVars envVars = new EnvVars();
 
         // Use the ControllerManager's dynamic count for the environment variable
         envVars.put("EVSHIM_MAX_PLAYERS", String.valueOf(enabledPlayerCount));
@@ -286,12 +303,17 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
         String primaryDNS = "8.8.4.4";
         ConnectivityManager connectivityManager = (ConnectivityManager) context.getSystemService(Service.CONNECTIVITY_SERVICE);
-        if (connectivityManager.getActiveNetwork() != null) {
-            ArrayList<InetAddress> dnsServers = new ArrayList<>(connectivityManager.getLinkProperties(connectivityManager.getActiveNetwork()).getDnsServers());
-
-            // Check if the dnsServers list is not empty before getting an item
-            if (!dnsServers.isEmpty()) {
-                primaryDNS = dnsServers.get(0).toString().substring(1);
+        // Capture activeNetwork once to avoid TOCTOU: getActiveNetwork() called twice in the
+        // original code would allow the network to be lost between the null check and getLinkProperties(),
+        // causing getLinkProperties() to return null → NPE on getDnsServers().
+        android.net.Network activeNetwork = connectivityManager.getActiveNetwork();
+        if (activeNetwork != null) {
+            android.net.LinkProperties linkProperties = connectivityManager.getLinkProperties(activeNetwork);
+            if (linkProperties != null) {
+                ArrayList<InetAddress> dnsServers = new ArrayList<>(linkProperties.getDnsServers());
+                if (!dnsServers.isEmpty()) {
+                    primaryDNS = dnsServers.get(0).toString().substring(1);
+                }
             }
         }
         envVars.put("ANDROID_RESOLV_DNS", primaryDNS);
@@ -649,8 +671,13 @@ public class BionicProgramLauncherComponent extends GuestProgramLauncherComponen
 
     public void restartWineServer() {
         ProcessHelper.terminateAllWineProcesses();
-        pid = execGuestProgram();
+        // Synchronize on lock to match start() and stop(), which also hold lock when reading/writing
+        // pid. Without this, a concurrent stop() call could read a stale pid, kill the wrong process,
+        // then reset pid=-1 — while restartWineServer() overwrites pid with the newly started process
+        // that will never be cleaned up (leaked Wine process).
+        synchronized (lock) {
+            pid = execGuestProgram();
+        }
         Log.d("BionicProgramLauncherComponent", "Wine restarted successfully");
-
     }
 }

@@ -231,7 +231,12 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         File nativeLibs = new File(nativeLibraryDir);
         // Log.d("GuestProgramLauncherComponent", nativeLibraryDir + " exists: " + nativeLibs.exists());
         // Log.d("GuestProgramLauncherComponent", nativeLibraryDir + " is directory: " + nativeLibs.isDirectory());
-        Log.d("GuestProgramLauncherComponent", nativeLibraryDir + " contains: " + Arrays.toString(Arrays.stream(nativeLibs.listFiles()).map(File::getName).toArray()));
+        // Guard against File.listFiles() returning null (SELinux denial, restricted storage, I/O error).
+        // Arrays.stream(null) throws NullPointerException, crashing every single game launch in that case.
+        File[] nativeLibFiles = nativeLibs.listFiles();
+        Log.d("GuestProgramLauncherComponent", nativeLibraryDir + " contains: " +
+            (nativeLibFiles != null ? Arrays.toString(Arrays.stream(nativeLibFiles).map(File::getName).toArray())
+                                    : "null (listFiles returned null — possible SELinux or I/O error)"));
         // nativeLibraryDir = nativeLibraryDir.replace("arm64", "arm64-v8a");
         // Log.d("GuestProgramLauncherComponent", nativeLibraryDir + " exists: " + (new File(nativeLibraryDir)).exists());
         // Log.d("GuestProgramLauncherComponent", steamApiPath + " exists: " + new File(steamApiPath).exists());
@@ -309,7 +314,12 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
 
         // envVars.put("WINEDLLPATH", dllsDir.toString());
         // envVars.put("WINEDLLOVERRIDES", "\"steam_api=n\"");
-        envVars.put("WINEESYNC", "0");
+        // Only force WINEESYNC=0 when the caller did not explicitly set it.
+        // Previously this was unconditional, which silently disabled ESYNC even when
+        // Container.DEFAULT_ENV_VARS (or LaunchOrchestrator.applyGameConfig) set WINEESYNC=1.
+        // bindSHM was read correctly above (before the clobber), but Wine itself never got the
+        // WINEESYNC=1 signal → mutex/event synchronisation fell back to polling → hangs / crashes.
+        if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "0");
 
         command += " /usr/bin/env " + envVars.toEscapedString() + " " + prootCmd;
 
@@ -480,7 +490,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
             for (String path : bindingPaths)
                 command += " --bind=\"" + (new File(path)).getAbsolutePath() + "\"";
         }
-        envVars.put("WINEESYNC", "0");
+        if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "0");
         String prootCmd = "sh -c \"" + shellCommand.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
         command += " /usr/bin/env " + envVars.toEscapedString() + " " + prootCmd;
         envVars.clear();
@@ -552,7 +562,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
             for (String path : bindingPaths)
                 command += " --bind=\"" + (new File(path)).getAbsolutePath() + "\"";
         }
-        envVars.put("WINEESYNC", "0");
+        if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "0");
         String prootCmd = "sh -c \"" + shellCommand.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
         command += " /usr/bin/env " + envVars.toEscapedString() + " " + prootCmd;
         envVars.clear();

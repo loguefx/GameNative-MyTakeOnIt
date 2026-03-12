@@ -406,7 +406,9 @@ object ContainerUtils {
             registryEditor.setDwordValue(
                 "Software\\Wine\\Direct3D",
                 "VideoPciVendorID",
-                getGPUCards(context)[containerData.videoPciDeviceID]!!.vendorId,
+                // Safe lookup: fall back to Qualcomm vendor ID (0x5143) for unlisted GPU device IDs
+                // so that Wine still gets a valid PCI vendor rather than crashing with NPE.
+                getGPUCards(context)[containerData.videoPciDeviceID]?.vendorId ?: 0x5143,
             )
             registryEditor.setStringValue("Software\\Wine\\Direct3D", "OffScreenRenderingMode", containerData.offScreenRenderingMode)
             registryEditor.setDwordValue("Software\\Wine\\Direct3D", "strict_shader_math", if (containerData.strictShaderMath) 1 else 0)
@@ -641,7 +643,16 @@ object ContainerUtils {
         val rootDir = com.winlator.xenvironment.ImageFs.find(context).rootDir
         val machineIdFile = File(rootDir, "etc/machine-id")
         try {
-            if (machineIdFile.exists() && machineIdFile.length() >= 32) return
+            // Validate content, not just length. A file written by another tool may be ≥ 32 bytes
+            // but contain dashes (UUID format), uppercase chars, or be truncated — all of which
+            // cause rsaenh's HMAC to produce a different result than expected, silently re-introducing
+            // the DRM crash. Only skip rewriting when the content is exactly 32 lowercase hex chars.
+            if (machineIdFile.exists()) {
+                val existing = machineIdFile.readText().trim()
+                val isValid = existing.length == 32 && existing.all { it in '0'..'9' || it in 'a'..'f' }
+                if (isValid) return
+                Timber.w("MachineId: existing /etc/machine-id is invalid ('$existing') — rewriting")
+            }
             machineIdFile.parentFile?.mkdirs()
             // Use Android ID (stable per-device per-app) as the seed, padded/hashed to 32 hex chars.
             // android.provider.Settings.Secure.ANDROID_ID is stable until a factory reset,
@@ -692,7 +703,10 @@ object ContainerUtils {
     fun getContainer(context: Context, appId: String): Container {
         val containerManager = ContainerManager(context)
         return if (containerManager.hasContainer(appId)) {
+            // getContainerById() is a Java method that can return null (platform type Container!).
+            // Use ?: to throw a clear, actionable exception rather than an NPE at a random callsite.
             containerManager.getContainerById(appId)
+                ?: throw IllegalStateException("Container $appId vanished between hasContainer() and getContainerById() — possible concurrent removal")
         } else {
             throw Exception("Container does not exist for game $appId")
         }
@@ -976,9 +990,14 @@ object ContainerUtils {
                         -1 // Default on timeout
                     }
 
-                    // Set wrapper based on DirectX version
+                    // Set wrapper based on DirectX version.
+                    // Always use fully-versioned identifiers (e.g. "vkd3d-2.14.1") so that
+                    // XServerScreen.applyGeneralPatches can resolve the install dir correctly.
+                    // A bare "vkd3d" would normalise to "vkd3d-null" when dxwrapperConfig is
+                    // empty (freshly created container), preventing VKD3D DLLs from being
+                    // extracted and causing an immediate d3d12.dll-not-found crash.
                     val newDxWrapper = when {
-                        dxVersion == 12 -> "vkd3d"
+                        dxVersion == 12 -> "vkd3d-${DefaultVersion.VKD3D}"
                         dxVersion in 1..8 -> "wined3d"
                         else -> containerData.dxwrapper // Keep existing for DX10/11 or errors
                     }
@@ -986,7 +1005,7 @@ object ContainerUtils {
                     // Update the wrapper if needed
                     if (newDxWrapper != containerData.dxwrapper) {
                         Timber.i("Setting DX wrapper for app $appId to $newDxWrapper (DirectX version: $dxVersion)")
-                        containerData.dxwrapper = newDxWrapper
+                        containerData = containerData.copy(dxwrapper = newDxWrapper)
                     }
                 } catch (e: Exception) {
                     Timber.w(e, "Error determining DirectX version: ${e.message}")
@@ -1048,10 +1067,15 @@ object ContainerUtils {
             if (profileMatch != null) {
                 // verName may already include the "proton-" prefix (e.g. "proton-10.0-arm64ec").
                 // Only prepend it when missing, so we never produce "proton-proton-10.0-arm64ec".
-                val verName = profileMatch.verName ?: return null
-                val versionId = if (verName.startsWith("proton-")) verName else "proton-$verName"
-                Timber.d("resolveKnownFixWineVersion: using downloaded profile for $appId: $versionId (raw verName=$verName)")
-                return versionId
+                // If verName is somehow null (defensive — the filter above rules this out), fall
+                // through to pass 2 rather than returning null and skipping the built-in check.
+                val verName = profileMatch.verName
+                if (verName != null) {
+                    val versionId = if (verName.startsWith("proton-")) verName else "proton-$verName"
+                    Timber.d("resolveKnownFixWineVersion: using downloaded profile for $appId: $versionId (raw verName=$verName)")
+                    return versionId
+                }
+                Timber.w("resolveKnownFixWineVersion: matched profile has null verName for $appId — falling through to built-in scan")
             }
 
             // Pass 2: built-in bundled versions that ship inside the APK's imagefs /opt/ directory.
@@ -1091,6 +1115,15 @@ object ContainerUtils {
      * ContentsManager.getInstallDir for that version — same path WineInfo.fromIdentifier uses.
      */
     fun applyPerGameContainerOverrides(context: Context, appId: String, containerData: ContainerData): ContainerData {
+        return try {
+            applyPerGameContainerOverridesInternal(context, appId, containerData)
+        } catch (e: Exception) {
+            Timber.e(e, "applyPerGameContainerOverrides failed for $appId — returning unmodified containerData so launch can proceed")
+            containerData
+        }
+    }
+
+    private fun applyPerGameContainerOverridesInternal(context: Context, appId: String, containerData: ContainerData): ContainerData {
         var result = containerData
 
         // Layer 2: KnownGameFixes.protonVersion — auto-migrate existing containers.
@@ -1121,7 +1154,7 @@ object ContainerUtils {
                     val requiredWrapper: String? = when (fix.dxVersion) {
                         DxVersion.DX9, DxVersion.DX10, DxVersion.DX11 -> "dxvk-${DefaultVersion.DXVK}"
                         DxVersion.DX12 -> "vkd3d-${DefaultVersion.VKD3D}"
-                        DxVersion.AUTO -> null
+                        DxVersion.AUTO, null -> null
                     }
                     if (requiredWrapper != null && result.dxwrapper != requiredWrapper) {
                         Timber.i("KnownGameFix: auto-migrating dxwrapper '${result.dxwrapper}' → '$requiredWrapper' for $appId (${fix.dxVersion})")
@@ -1168,7 +1201,10 @@ object ContainerUtils {
         val containerManager = ContainerManager(context)
 
         val container = if (containerManager.hasContainer(appId)) {
+            // getContainerById() returns a Java platform type (Container!) that can be null if the
+            // container was concurrently removed between hasContainer() and this call.
             containerManager.getContainerById(appId)
+                ?: createNewContainer(context, appId, appId, containerManager)
         } else {
             createNewContainer(context, appId, appId, containerManager)
         }
@@ -1323,41 +1359,31 @@ object ContainerUtils {
     }
 
     fun getOrCreateContainerWithOverride(context: Context, appId: String): Container {
-        val containerManager = ContainerManager(context)
+        // Run the full maintenance pipeline first (KnownGameFix migration, broken-prefix repair,
+        // wineVersion migration, drive sync, registry fixes) — this is the same work that a normal
+        // getOrCreateContainer call would perform. Previously the existing-container path skipped
+        // all of this, meaning KnownGameFix protonVersion was not applied and broken Wine prefixes
+        // were never repaired when launched via intent (useTemporaryOverride = true).
+        val container = getOrCreateContainer(context, appId)
 
-        return if (containerManager.hasContainer(appId)) {
-            val container = containerManager.getContainerById(appId)
-
-            // Apply temporary override if present (without saving to disk)
-            if (IntentLaunchManager.hasTemporaryOverride(appId)) {
-                val overrideConfig = IntentLaunchManager.getTemporaryOverride(appId)
-                if (overrideConfig != null) {
-                    // Backup original config before applying override (if not already backed up)
-                    if (IntentLaunchManager.getOriginalConfig(appId) == null) {
-                        val originalConfig = toContainerData(container)
-                        IntentLaunchManager.setOriginalConfig(appId, originalConfig)
-                    }
-
-                    // Get the effective config (merge base with override)
-                    val effectiveConfig = IntentLaunchManager.getEffectiveContainerConfig(context, appId)
-                    if (effectiveConfig != null) {
-                        applyToContainer(context, container, effectiveConfig, saveToDisk = false)
-                        Timber.i("Applied temporary config override to existing container for app $appId (in-memory only)")
-                    }
+        // Layer the temporary override on top of the now-maintained container, in-memory only.
+        // This must happen AFTER maintenance so the override wins over KnownGameFix defaults.
+        if (IntentLaunchManager.hasTemporaryOverride(appId)) {
+            val overrideConfig = IntentLaunchManager.getTemporaryOverride(appId)
+            if (overrideConfig != null) {
+                // Snapshot pre-override state for restore-on-exit
+                if (IntentLaunchManager.getOriginalConfig(appId) == null) {
+                    IntentLaunchManager.setOriginalConfig(appId, toContainerData(container))
+                }
+                val effectiveConfig = IntentLaunchManager.getEffectiveContainerConfig(context, appId)
+                if (effectiveConfig != null) {
+                    applyToContainer(context, container, effectiveConfig, saveToDisk = false)
+                    Timber.i("Applied temporary config override to container for app $appId (in-memory only)")
                 }
             }
-
-            container
-        } else {
-            // Create new container with override config if present
-            val overrideConfig = if (IntentLaunchManager.hasTemporaryOverride(appId)) {
-                IntentLaunchManager.getTemporaryOverride(appId)
-            } else {
-                null
-            }
-
-            createNewContainer(context, appId, appId, containerManager, overrideConfig)
         }
+
+        return container
     }
 
     /**

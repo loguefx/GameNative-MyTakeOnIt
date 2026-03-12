@@ -1294,6 +1294,12 @@ fun PluviaMain(
 
             /** Game Screen **/
             composable(route = PluviaScreen.XServer.route) {
+                // Use a lifecycle-bound scope so navigateBack/onGameLaunchError coroutines are
+                // automatically cancelled when this composable leaves the composition. Previously,
+                // raw CoroutineScope(Dispatchers.Default) objects were created on every call — they
+                // were never cancelled, could call navController.popBackStack() on a destroyed
+                // NavController, and allocated a new SupervisorJob on every game exit.
+                val xServerScope = rememberCoroutineScope()
                 XServerScreen(
                     appId = state.launchedAppId,
                     bootToContainer = state.bootToContainer,
@@ -1303,20 +1309,18 @@ fun PluviaMain(
                         gameBackAction = cb
                     },
                     navigateBack = {
-                        CoroutineScope(Dispatchers.Default).launch {
-                            withContext(Dispatchers.Main) {
-                                val currentRoute = navController.currentBackStackEntry
-                                    ?.destination
-                                    ?.route
+                        xServerScope.launch(Dispatchers.Main.immediate) {
+                            val currentRoute = navController.currentBackStackEntry
+                                ?.destination
+                                ?.route
 
-                                if (currentRoute == PluviaScreen.XServer.route) {
-                                    if (MainActivity.wasLaunchedViaExternalIntent) {
-                                        Timber.d("[IntentLaunch]: Finishing activity to return to external launcher")
-                                        MainActivity.wasLaunchedViaExternalIntent = false
-                                        (context as? android.app.Activity)?.finish()
-                                    } else {
-                                        navController.popBackStack()
-                                    }
+                            if (currentRoute == PluviaScreen.XServer.route) {
+                                if (MainActivity.wasLaunchedViaExternalIntent) {
+                                    Timber.d("[IntentLaunch]: Finishing activity to return to external launcher")
+                                    MainActivity.wasLaunchedViaExternalIntent = false
+                                    (context as? android.app.Activity)?.finish()
+                                } else {
+                                    navController.popBackStack()
                                 }
                             }
                         }
@@ -1329,11 +1333,9 @@ fun PluviaMain(
                     },
                     onGameLaunchError = { error ->
                         viewModel.onGameLaunchError(error)
-                        // Leave game screen so user is not stuck on black/debug view (must run on main thread)
-                        CoroutineScope(Dispatchers.Default).launch {
-                            withContext(Dispatchers.Main) {
-                                navController.popBackStack()
-                            }
+                        // Leave game screen so user is not stuck on black/debug view
+                        xServerScope.launch(Dispatchers.Main.immediate) {
+                            navController.popBackStack()
                         }
                     },
                 )
@@ -1512,9 +1514,14 @@ fun preLaunchApp(
                     context.getString(R.string.main_installing_bionic)
                 }
                 setLoadingMessage(installMsg)
-                ImageFsInstaller.installIfNeededFuture(context, context.assets, container) { progress ->
+                val firstTimeInstallSuccess = ImageFsInstaller.installIfNeededFuture(context, context.assets, container) { progress ->
                     setLoadingProgress(progress / 100f)
                 }.get()
+                if (!firstTimeInstallSuccess) {
+                    Timber.tag("PluviaMain").e("First-time ImageFs install failed for $appId — aborting launch")
+                    setLoadingDialogVisible(false)
+                    return@launch
+                }
                 setLoadingProgress(-1f)
             }
 
@@ -1634,11 +1641,21 @@ fun preLaunchApp(
                     setLoadingMessage("Extracting $protonVersion")
                     setLoadingProgress(-1f)
                     val downloaded = File(imageFs.getFilesDir(), "$protonVersion.txz")
-                    TarCompressorUtils.extract(
+                    // TarCompressorUtils.extract() returns false on any failure (corrupt archive,
+                    // disk full, I/O error) — it never throws. Previously the return value was
+                    // discarded, so a failed extraction silently left /opt/ empty. The game would
+                    // then launch with container.wineVersion pointing to a missing binary → black screen.
+                    val extractOk = TarCompressorUtils.extract(
                         TarCompressorUtils.Type.XZ,
                         downloaded,
                         outFile,
                     )
+                    if (!extractOk) {
+                        Timber.tag("PluviaMain").e("Failed to extract $protonVersion — archive may be corrupt, deleting for re-download next launch")
+                        downloaded.delete()
+                        setLoadingDialogVisible(false)
+                        return@launch
+                    }
                 }
             }
         }
@@ -1708,9 +1725,18 @@ fun preLaunchApp(
         setLoadingMessage(loadingMessage)
         val imageFsInstallSuccess =
             ImageFsInstaller.installIfNeededFuture(context, context.assets, container) { progress ->
-                // Log.d("XServerScreen", "$progress")
                 setLoadingProgress(progress / 100f)
             }.get()
+
+        // If the image filesystem install failed (disk full, I/O error, asset extraction failure),
+        // the container has no rootfs. Proceeding would open XServerScreen against a broken
+        // environment, producing a permanent black screen with no user-visible error message.
+        if (!imageFsInstallSuccess) {
+            Timber.tag("PluviaMain").e("ImageFs install failed for $appId — aborting launch")
+            setLoadingDialogVisible(false)
+            return@launch
+        }
+
         setLoadingMessage(context.getString(R.string.main_loading))
         setLoadingProgress(-1f)
 
@@ -1807,9 +1833,17 @@ fun preLaunchApp(
             return@launch
         }
 
-        // For Steam games, sync save files and check no pending remote operations are running
+        // For Steam games, sync save files and check no pending remote operations are running.
+        // Capture userSteamId here — the !! operator would crash if the Steam session expired
+        // during the preceding download/extraction steps (which can take several minutes).
+        val steamId = SteamService.userSteamId
+        if (steamId == null) {
+            Timber.tag("PluviaMain").e("Steam session expired before cloud save sync for $appId — aborting launch")
+            setLoadingDialogVisible(false)
+            return@launch
+        }
         val prefixToPath: (String) -> String = { prefix ->
-            PathType.from(prefix).toAbsPath(context, gameId, SteamService.userSteamId!!.accountID)
+            PathType.from(prefix).toAbsPath(context, gameId, steamId.accountID)
         }
         setLoadingMessage("Syncing cloud saves")
         setLoadingProgress(-1f)
@@ -2010,6 +2044,13 @@ fun preLaunchApp(
         }
         } catch (e: Throwable) {
             setLoadingDialogVisible(false)
+            // If the launch pipeline threw, clear any in-flight temporary container override so
+            // the next launch attempt doesn't silently reapply settings the user never requested.
+            // Previously this was only cleared in the SAVE/DISCARD/KEEP dialog handlers (lines 818/827/837),
+            // which are never reached when an exception aborts the launch early.
+            if (useTemporaryOverride) {
+                IntentLaunchManager.clearTemporaryOverride(appId)
+            }
             Timber.tag("GameLaunch").e(e, "preLaunchApp failed appId=$appId")
             setMessageDialogState(
                 MessageDialogState(

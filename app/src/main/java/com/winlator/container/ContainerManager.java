@@ -351,6 +351,14 @@ public class ContainerManager {
 
         File[] srcfiles = srcDir.listFiles(file -> file.isFile());
 
+        // File.listFiles() returns null when srcDir doesn't exist, is not a directory, or an I/O
+        // error occurs (e.g. partial Wine installation, unmounted SD card). Dereferencing null
+        // here would throw NPE and leave the container partially created with no DLLs.
+        if (srcfiles == null) {
+            Log.e("ContainerManager", "Cannot list Wine DLLs in: " + srcDir + " — skipping " + srcName);
+            return;
+        }
+
         for (File file : srcfiles) {
             String dllName = file.getName();
             if (dllName.equals("iexplore.exe") && wineInfo.isArm64EC() && srcName.equals("aarch64-windows"))

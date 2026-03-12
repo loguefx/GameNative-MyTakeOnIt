@@ -5,7 +5,6 @@ import app.gamenative.config.ConfigPreset
 import app.gamenative.config.DxVersion
 import app.gamenative.config.GameConfig
 import app.gamenative.config.KnownGameFixes
-import app.gamenative.config.ProtonVersion
 import app.gamenative.profile.WineRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -144,6 +143,20 @@ object CrashRecoveryManager {
     }
 
     // ── Config downgrade steps ──────────────────────────────────────────────────────────
+    //
+    // ARCHITECTURAL NOTE — why protonVersion is intentionally NOT changed here:
+    //
+    // container.wineVersion (which selects the actual Wine binary) is set by
+    // ContainerUtils.applyPerGameContainerOverrides, which is called from getOrCreateContainer.
+    // That call happens in PluviaMain.preLaunchApp BEFORE XServerScreen launches and calls
+    // resolveGameConfig → applyRecovery. So any protonVersion written here arrives too late
+    // to influence the current launch's container — it would be a no-op for this session and
+    // potentially confuse the UI by showing a stale "recommended" version badge.
+    //
+    // The meaningful recovery work is: DX version downgrade (which DOES reach dxwrapper via
+    // applyPerGameContainerOverridesInternal on the next launch because GameConfig is saved),
+    // resolution/FPS reduction, and conservative Box64 settings. These all take effect
+    // correctly through applyGameConfig or the container override path.
 
     private fun applyStep(config: GameConfig, step: Int): GameConfig = when (step) {
         1 -> config.copy(
@@ -153,7 +166,6 @@ object CrashRecoveryManager {
             notes           = config.notes + " [Recovery step 1: VSync off, resolution reduced]",
         )
         2 -> config.copy(
-            protonVersion            = ProtonVersion.PROTON_8_0,
             dxVersion                = DxVersion.DX11,
             dxvkEnabled              = true,
             vkd3dEnabled             = false,
@@ -163,10 +175,9 @@ object CrashRecoveryManager {
             box64BigBlock            = true,
             box64StrongMem           = true,
             preset                   = ConfigPreset.COMPATIBILITY,
-            notes                    = config.notes + " [Recovery step 2: COMPATIBILITY mode — DX11 Proton 8.0]",
+            notes                    = config.notes + " [Recovery step 2: COMPATIBILITY mode — DX11 forced]",
         )
         3 -> config.copy(
-            protonVersion            = ProtonVersion.PROTON_8_0,
             dxVersion                = DxVersion.DX9,
             dxvkEnabled              = true,
             vkd3dEnabled             = false,
@@ -178,10 +189,9 @@ object CrashRecoveryManager {
             box64BigBlock            = false,   // more conservative JIT for stability
             box64StrongMem           = true,
             preset                   = ConfigPreset.COMPATIBILITY,
-            notes                    = config.notes + " [Recovery step 3: DX9 force, 30fps cap, conservative Box64]",
+            notes                    = config.notes + " [Recovery step 3: DX9 forced, 30fps cap, conservative Box64]",
         )
         else -> config.copy(
-            protonVersion            = ProtonVersion.WINE_GE_LATEST,
             wineRuntime              = WineRuntime.WINE_GE,
             dxVersion                = DxVersion.DX9,
             dxvkEnabled              = true,
